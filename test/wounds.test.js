@@ -467,3 +467,124 @@ test('does not allow an admin to control an unbound group', async () => {
     await server.stop();
   }
 });
+
+test('adds private chat credit from C+ commands', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ucredit' },
+        replyToken: 'reply-credit-1',
+        message: { type: 'text', id: 'm-credit-1', text: 'C+100' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ucredit' },
+        replyToken: 'reply-credit-2',
+        message: { type: 'text', id: 'm-credit-2', text: 'C+200, C+59' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit', userId: 'Ucredit' },
+        replyToken: 'reply-credit-group',
+        message: { type: 'text', id: 'm-credit-group', text: 'C+999' },
+        timestamp: 1710000002000
+      }
+    ]);
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const credit = credits.find((row) => row.userId === 'Ucredit');
+
+    assert.equal(credit.balance, 359);
+    assert.equal(credit.totalAdded, 359);
+    assert.equal(credit.transactions.length, 2);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.filter((log) => log.creditAction === 'credit_added').length, 2);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('builds balance, active wound, and withdraw cards from keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcredit2');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ubuyer' },
+        replyToken: 'reply-credit-add',
+        message: { type: 'text', id: 'm-credit-add-buyer', text: 'C+120' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit2', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-credit-round-open', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit2', userId: 'Ubuyer' },
+        message: { type: 'text', id: 'm-credit-trade', text: 'ซล100' },
+        timestamp: 1710000002000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit2', userId: 'Useller' },
+        message: { type: 'text', id: 'm-credit-accept', quotedMessageId: 'm-credit-trade', text: 'ต' },
+        timestamp: 1710000003000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ubuyer' },
+        replyToken: 'reply-balance',
+        message: { type: 'text', id: 'm-balance', text: 'เช็คยอดเงิน' },
+        timestamp: 1710000004000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ubuyer' },
+        replyToken: 'reply-active-wounds',
+        message: { type: 'text', id: 'm-active-wounds', text: 'แผลที่กำลังติด' },
+        timestamp: 1710000005000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ubuyer' },
+        replyToken: 'reply-withdraw',
+        message: { type: 'text', id: 'm-withdraw', text: 'ถอนยอดเงิน' },
+        timestamp: 1710000006000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const balanceLog = logs.find((log) => log.creditAction === 'balance_card');
+    const activeLog = logs.find((log) => log.creditAction === 'active_wounds_card');
+    const withdrawLog = logs.find((log) => log.creditAction === 'withdraw_card');
+
+    assert.equal(balanceLog.creditBalance, 120);
+    assert.equal(balanceLog.activeWoundAmount, 100);
+    assert.equal(activeLog.activeWoundCount, 1);
+    assert.equal(activeLog.activeWoundAmount, 100);
+    assert.equal(withdrawLog.withdrawableBalance, 20);
+  } finally {
+    await server.stop();
+  }
+});

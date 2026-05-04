@@ -16,12 +16,15 @@ const MESSAGE_FILE = path.join(__dirname, 'messages.json');
 const WOUND_FILE = path.join(__dirname, 'wounds.json');
 const ROUND_FILE = path.join(__dirname, 'rounds.json');
 const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
+const CREDIT_FILE = path.join(__dirname, 'credits.json');
 const MAX_LOGS = 1000;
 const MAX_ADMINS = 1000;
 const MAX_MESSAGES = 3000;
 const MAX_WOUNDS = 1000;
 const MAX_ROUNDS = 1000;
 const MAX_QUEUE_LISTS = 200;
+const MAX_CREDITS = 5000;
+const MAX_CREDIT_TRANSACTIONS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 
 function ensureJsonFile(filePath) {
@@ -95,6 +98,14 @@ function writeQueueLists(queueLists) {
   writeJsonArray(QUEUE_LIST_FILE, sortQueueLists(queueLists), MAX_QUEUE_LISTS);
 }
 
+function readCredits() {
+  return sortCredits(readJsonArray(CREDIT_FILE, 'credits.json'));
+}
+
+function writeCredits(credits) {
+  writeJsonArray(CREDIT_FILE, sortCredits(credits), MAX_CREDITS);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -164,6 +175,26 @@ function sortRounds(rounds) {
 
 function sortQueueLists(queueLists) {
   return [...queueLists].sort((listA, listB) => (listB.timestamp || 0) - (listA.timestamp || 0));
+}
+
+function normalizeCreditRow(row) {
+  const transactions = Array.isArray(row.transactions) ? row.transactions : [];
+
+  return {
+    userId: row.userId || '',
+    balance: Number(row.balance) || 0,
+    totalAdded: Number(row.totalAdded) || 0,
+    transactions: transactions.slice(0, MAX_CREDIT_TRANSACTIONS),
+    updatedTimestamp: row.updatedTimestamp || row.timestamp || 0,
+    updatedTime: row.updatedTime || row.time || ''
+  };
+}
+
+function sortCredits(credits) {
+  return [...credits]
+    .map(normalizeCreditRow)
+    .filter((credit) => credit.userId)
+    .sort((creditA, creditB) => (creditB.updatedTimestamp || 0) - (creditA.updatedTimestamp || 0));
 }
 
 function escapeRegExp(value) {
@@ -507,8 +538,364 @@ function buildQueueSummary(groupId) {
   return `คิวจุด✅\n\n${lines.join('\n')}${note}`;
 }
 
-async function replyToLine(replyToken, texts) {
-  if (!LINE_CHANNEL_ACCESS_TOKEN || !replyToken || texts.length === 0) {
+function toLineMessage(message) {
+  if (typeof message === 'string') {
+    return {
+      type: 'text',
+      text: message
+    };
+  }
+
+  return message;
+}
+
+function parseCreditAddCommand(message) {
+  const text = String(message || '').trim();
+  if (!text) return null;
+
+  const parts = text.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const amounts = [];
+  for (const part of parts) {
+    const match = part.match(/^c\s*\+\s*(\d+(?:\.\d{1,2})?)$/i);
+    if (!match) return null;
+
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    amounts.push(amount);
+  }
+
+  return {
+    amounts,
+    total: roundPoints(amounts.reduce((sum, amount) => sum + amount, 0))
+  };
+}
+
+function parseCreditKeyword(message) {
+  const text = normalizeMessageText(message);
+  if (['เช็คยอดเงิน', 'เช็คยอด'].includes(text)) return 'balance';
+  if (['แผลที่กำลังติด', 'การจับคู่', 'จับคู่'].includes(text)) return 'active_wounds';
+  if (['ถอนยอดเงิน', 'ถอน'].includes(text)) return 'withdraw';
+  return null;
+}
+
+function roundPoints(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function formatPoints(value) {
+  return roundPoints(value).toFixed(2);
+}
+
+function findCreditByUserId(userId) {
+  return readCredits().find((credit) => credit.userId === userId) || {
+    userId,
+    balance: 0,
+    totalAdded: 0,
+    transactions: [],
+    updatedTimestamp: 0,
+    updatedTime: ''
+  };
+}
+
+function addCreditForUser(event, totalAmount, rawText) {
+  const source = event.source || {};
+  const nowTimestamp = event.timestamp || Date.now();
+  const credits = readCredits();
+  const existing = credits.find((credit) => credit.userId === source.userId) || {
+    userId: source.userId,
+    balance: 0,
+    totalAdded: 0,
+    transactions: []
+  };
+  const nextBalance = roundPoints(existing.balance + totalAmount);
+  const transaction = {
+    id: `${event.message?.id || nowTimestamp}:credit`,
+    type: 'credit_added',
+    amount: totalAmount,
+    rawText,
+    messageId: event.message?.id || '',
+    balanceAfter: nextBalance,
+    timestamp: nowTimestamp,
+    time: formatDate(nowTimestamp)
+  };
+  const updatedCredit = {
+    ...existing,
+    balance: nextBalance,
+    totalAdded: roundPoints(existing.totalAdded + totalAmount),
+    transactions: [transaction, ...(existing.transactions || [])].slice(0, MAX_CREDIT_TRANSACTIONS),
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  };
+  const remainingCredits = credits.filter((credit) => credit.userId !== source.userId);
+
+  writeCredits([updatedCredit, ...remainingCredits]);
+  return {
+    credit: updatedCredit,
+    transaction
+  };
+}
+
+function getUserActiveWounds(userId) {
+  if (!userId) return [];
+
+  return readWounds().filter(
+    (wound) =>
+      wound.status === 'active' &&
+      (wound.openerUserId === userId || wound.accepterUserId === userId)
+  );
+}
+
+function getWoundAmount(wound) {
+  const amount = Number(String(wound?.amount || '').replace(/[^\d.]/g, ''));
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function getCreditSnapshot(userId) {
+  const credit = findCreditByUserId(userId);
+  const activeWounds = getUserActiveWounds(userId);
+  const activeWoundAmount = roundPoints(activeWounds.reduce((sum, wound) => sum + getWoundAmount(wound), 0));
+  const withdrawableBalance = Math.max(0, roundPoints(credit.balance - activeWoundAmount));
+
+  return {
+    credit,
+    activeWounds,
+    activeWoundAmount,
+    withdrawableBalance
+  };
+}
+
+function flexText(text, options = {}) {
+  return {
+    type: 'text',
+    text: String(text),
+    wrap: true,
+    ...options
+  };
+}
+
+function flexRow(label, value, valueColor = '#111827') {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    contents: [
+      flexText(label, { size: 'sm', color: '#9CA3AF', flex: 4 }),
+      flexText(value, { size: 'sm', color: valueColor, weight: 'bold', align: 'end', flex: 6 })
+    ]
+  };
+}
+
+function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, rows, footer }) {
+  return {
+    type: 'bubble',
+    size: 'mega',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: titleColor,
+      paddingAll: '16px',
+      contents: [
+        flexText(title, { color: '#FFFFFF', weight: 'bold', size: 'lg' })
+      ]
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'md',
+      paddingAll: '18px',
+      contents: [
+        flexText(subtitle, { color: '#9CA3AF', align: 'center', size: 'sm' }),
+        flexText(amount, { color: bodyColor, align: 'center', weight: 'bold', size: '4xl' }),
+        {
+          type: 'separator',
+          margin: 'lg'
+        },
+        ...rows,
+        ...(footer ? [flexText(footer, { color: '#C7C7C7', align: 'center', size: 'xs', margin: 'md' })] : [])
+      ]
+    }
+  };
+}
+
+function withCreditQuickReplies(message) {
+  return {
+    ...message,
+    quickReply: {
+      items: [
+        {
+          type: 'action',
+          action: { type: 'message', label: 'เช็คยอดเงิน', text: 'เช็คยอดเงิน' }
+        },
+        {
+          type: 'action',
+          action: { type: 'message', label: 'แผลที่กำลังติด', text: 'แผลที่กำลังติด' }
+        },
+        {
+          type: 'action',
+          action: { type: 'message', label: 'ถอนยอดเงิน', text: 'ถอนยอดเงิน' }
+        }
+      ]
+    }
+  };
+}
+
+function buildCreditAddedFlex(amount, snapshot) {
+  return withCreditQuickReplies({
+    type: 'flex',
+    altText: `เพิ่มเครดิตสำเร็จ +${formatPoints(amount)} แต้ม`,
+    contents: buildCreditBubble({
+      title: '✓ สลิปถูกต้อง',
+      titleColor: '#22C55E',
+      bodyColor: '#111827',
+      subtitle: 'ตรวจสอบโดยระบบ',
+      amount: formatPoints(amount),
+      rows: [
+        flexRow('แต้มที่ได้รับ', `+${formatPoints(amount)} แต้ม`, '#22C55E'),
+        flexRow('แต้มคงเหลือ', `${formatPoints(snapshot.credit.balance)} แต้ม`),
+        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B')
+      ],
+      footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
+    })
+  });
+}
+
+function buildBalanceFlex(snapshot) {
+  return withCreditQuickReplies({
+    type: 'flex',
+    altText: `ยอดแต้มคงเหลือ ${formatPoints(snapshot.credit.balance)} แต้ม`,
+    contents: buildCreditBubble({
+      title: '💰 ยอดแต้มของคุณ',
+      titleColor: '#3B82F6',
+      bodyColor: '#3B82F6',
+      subtitle: 'แต้มคงเหลือ',
+      amount: formatPoints(snapshot.credit.balance),
+      rows: [
+        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B'),
+        flexRow('ถอนได้', `${formatPoints(snapshot.withdrawableBalance)} แต้ม`, '#111827'),
+        flexRow('จำนวนแผล', `${snapshot.activeWounds.length} รายการ`, '#F59E0B')
+      ],
+      footer: 'ตรวจสอบโดยระบบ'
+    })
+  });
+}
+
+function buildActiveWoundsFlex(snapshot) {
+  const woundRows = snapshot.activeWounds.slice(0, 5).map((wound) => {
+    const opponent = wound.openerUserId === snapshot.credit.userId ? wound.accepterUserId : wound.openerUserId;
+    const label = wound.roundName || wound.groupId || 'รายการ';
+    return flexRow(`#${String(wound.id || '').slice(-6)} ${label}`, `vs ${opponent || '-'} ${formatPoints(getWoundAmount(wound))}`, '#F59E0B');
+  });
+
+  return withCreditQuickReplies({
+    type: 'flex',
+    altText: `แผลที่กำลังติด ${snapshot.activeWounds.length} รายการ`,
+    contents: buildCreditBubble({
+      title: '📋 จับคู่อยู่',
+      titleColor: '#F59E0B',
+      bodyColor: '#F59E0B',
+      subtitle: 'กำลังใช้อยู่',
+      amount: `${formatPoints(snapshot.activeWoundAmount)} แต้ม`,
+      rows: woundRows.length > 0
+        ? [
+            flexRow('รวม', `${snapshot.activeWounds.length} รายการ`, '#F59E0B'),
+            ...woundRows
+          ]
+        : [
+            flexRow('รวม', '0 รายการ', '#F59E0B'),
+            flexText('ไม่มีรายการที่ค้างอยู่', { color: '#9CA3AF', align: 'center' })
+          ],
+      footer: ''
+    })
+  });
+}
+
+function buildWithdrawFlex(snapshot) {
+  return withCreditQuickReplies({
+    type: 'flex',
+    altText: `ถอนยอดเงินได้ ${formatPoints(snapshot.withdrawableBalance)} แต้ม`,
+    contents: buildCreditBubble({
+      title: '🏧 ถอนยอดเงิน',
+      titleColor: '#EF4444',
+      bodyColor: '#EF4444',
+      subtitle: 'ยอดที่ถอนได้',
+      amount: `${formatPoints(snapshot.withdrawableBalance)} แต้ม`,
+      rows: [
+        flexRow('แต้มคงเหลือ', `${formatPoints(snapshot.credit.balance)} แต้ม`),
+        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B'),
+        flexRow('แผลที่ค้าง', `${snapshot.activeWounds.length} รายการ`, '#EF4444')
+      ],
+      footer: 'ยอดถอนได้ = ยอดคงเหลือ - แต้มที่กำลังใช้อยู่'
+    })
+  });
+}
+
+function handleCreditEvent(event) {
+  if (event.type !== 'message' || event.message?.type !== 'text' || !event.source?.userId) {
+    return null;
+  }
+
+  const source = event.source || {};
+  const messageText = getMessageText(event);
+
+  if (source.type !== 'user') {
+    return null;
+  }
+
+  const creditCommand = parseCreditAddCommand(messageText);
+  if (creditCommand) {
+    const result = addCreditForUser(event, creditCommand.total, messageText);
+    const snapshot = getCreditSnapshot(source.userId);
+
+    return {
+      type: 'credit_added',
+      amount: creditCommand.total,
+      creditBalance: result.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      replyMessages: [buildCreditAddedFlex(creditCommand.total, snapshot)]
+    };
+  }
+
+  const keyword = parseCreditKeyword(messageText);
+  if (!keyword) return null;
+
+  const snapshot = getCreditSnapshot(source.userId);
+  if (keyword === 'balance') {
+    return {
+      type: 'balance_card',
+      creditBalance: snapshot.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      activeWoundCount: snapshot.activeWounds.length,
+      replyMessages: [buildBalanceFlex(snapshot)]
+    };
+  }
+
+  if (keyword === 'active_wounds') {
+    return {
+      type: 'active_wounds_card',
+      creditBalance: snapshot.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      activeWoundCount: snapshot.activeWounds.length,
+      replyMessages: [buildActiveWoundsFlex(snapshot)]
+    };
+  }
+
+  return {
+    type: 'withdraw_card',
+    creditBalance: snapshot.credit.balance,
+    activeWoundAmount: snapshot.activeWoundAmount,
+    withdrawableBalance: snapshot.withdrawableBalance,
+    activeWoundCount: snapshot.activeWounds.length,
+    replyMessages: [buildWithdrawFlex(snapshot)]
+  };
+}
+
+async function replyToLine(replyToken, messages) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !replyToken || messages.length === 0) {
     return null;
   }
 
@@ -520,10 +907,7 @@ async function replyToLine(replyToken, texts) {
     },
     body: JSON.stringify({
       replyToken,
-      messages: texts.slice(0, 5).map((text) => ({
-        type: 'text',
-        text
-      }))
+      messages: messages.slice(0, 5).map(toLineMessage)
     })
   });
 
@@ -535,8 +919,8 @@ async function replyToLine(replyToken, texts) {
   return response;
 }
 
-async function pushToLine(to, texts) {
-  if (!LINE_CHANNEL_ACCESS_TOKEN || !to || texts.length === 0) {
+async function pushToLine(to, messages) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !to || messages.length === 0) {
     return null;
   }
 
@@ -548,10 +932,7 @@ async function pushToLine(to, texts) {
     },
     body: JSON.stringify({
       to,
-      messages: texts.slice(0, 5).map((text) => ({
-        type: 'text',
-        text
-      }))
+      messages: messages.slice(0, 5).map(toLineMessage)
     })
   });
 
@@ -1103,6 +1484,7 @@ ensureJsonFile(MESSAGE_FILE);
 ensureJsonFile(WOUND_FILE);
 ensureJsonFile(ROUND_FILE);
 ensureJsonFile(QUEUE_LIST_FILE);
+ensureJsonFile(CREDIT_FILE);
 
 // LINE signature verification needs the exact raw request body.
 app.post(
@@ -1129,6 +1511,7 @@ app.post(
           const woundEntry = createWoundFromReply(event);
           const trackedMessage = trackGroupMessage(event);
           const unsendAction = await handleUnsendEvent(event);
+          const creditAction = handleCreditEvent(event);
 
           if (adminEntry) {
             logEntry.adminRegistered = true;
@@ -1179,6 +1562,19 @@ app.post(
             logEntry.cancelledMessage = unsendAction.cancelledMessage;
             logEntry.unsendDisplayName = unsendAction.displayName;
             logEntry.unsendNotification = unsendAction.notification;
+          }
+
+          if (creditAction) {
+            logEntry.creditAction = creditAction.type;
+            logEntry.creditAmount = creditAction.amount || 0;
+            logEntry.creditBalance = creditAction.creditBalance;
+            logEntry.activeWoundAmount = creditAction.activeWoundAmount;
+            logEntry.activeWoundCount = creditAction.activeWoundCount || 0;
+            logEntry.withdrawableBalance = creditAction.withdrawableBalance;
+
+            if (Array.isArray(creditAction.replyMessages) && creditAction.replyMessages.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, creditAction.replyMessages));
+            }
           }
 
           newLogs.push(logEntry);
@@ -1264,6 +1660,7 @@ app.get('/', (req, res) => {
       <a href="/wounds">Wounds</a>
       <a href="/rounds">Rounds</a>
       <a href="/queue-lists">Queue Lists</a>
+      <a href="/credits">Credits</a>
       <a href="/api/logs">JSON API</a>
       <a href="/webhook">Webhook Path</a>
     </div>
@@ -2055,6 +2452,160 @@ app.get('/queue-lists', (req, res) => {
 </html>`);
 });
 
+app.get('/credits', (req, res) => {
+  const credits = readCredits();
+  const rows = credits
+    .map((credit) => {
+      const latestTransaction = credit.transactions[0] || {};
+
+      return `<tr>
+        <td>${escapeHtml(credit.updatedTime)}</td>
+        <td>${escapeHtml(credit.userId)}</td>
+        <td>${escapeHtml(formatPoints(credit.balance))}</td>
+        <td>${escapeHtml(formatPoints(credit.totalAdded))}</td>
+        <td>${escapeHtml(credit.transactions.length)}</td>
+        <td>${escapeHtml(latestTransaction.rawText || '')}</td>
+      </tr>`;
+    })
+    .join('');
+
+  res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LINE Credits</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #1f2937;
+      background: #f3f4f6;
+    }
+    main {
+      max-width: 1180px;
+      margin: 32px auto;
+      padding: 0 20px 40px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      color: #111827;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: #ffffff;
+      background: #047857;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button.danger {
+      background: #b91c1c;
+    }
+    .hint {
+      margin: 0 0 18px;
+      color: #4b5563;
+    }
+    code {
+      padding: 2px 6px;
+      background: #e5e7eb;
+      border-radius: 4px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 920px;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th {
+      background: #f9fafb;
+      color: #374151;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .empty {
+      padding: 28px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>LINE Credits</h1>
+      <div class="actions">
+        <a class="button" href="/credits">Refresh</a>
+        <a class="button" href="/logs">Logs</a>
+        <button class="danger" type="button" onclick="clearCredits()">Clear Credits</button>
+      </div>
+    </div>
+    <p class="hint">Private commands: <code>C+100</code>, <code>C+200, C+59</code>, <code>เช็คยอดเงิน</code>, <code>แผลที่กำลังติด</code>, <code>ถอนยอดเงิน</code></p>
+    <div class="table-wrap">
+      ${
+        rows
+          ? `<table>
+              <thead>
+                <tr>
+                  <th>Updated</th>
+                  <th>User ID</th>
+                  <th>Balance</th>
+                  <th>Total Added</th>
+                  <th>Transactions</th>
+                  <th>Latest Command</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>`
+          : '<div class="empty">No credits yet.</div>'
+      }
+    </div>
+  </main>
+  <script>
+    async function clearCredits() {
+      if (!confirm('Clear all credits?')) return;
+
+      const response = await fetch('/api/credits', { method: 'DELETE' });
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        alert('Unable to clear credits.');
+      }
+    }
+  </script>
+</body>
+</html>`);
+});
+
 app.get('/api/logs', (req, res) => {
   res.json(readLogs());
 });
@@ -2100,6 +2651,15 @@ app.get('/api/queue-lists', (req, res) => {
 
 app.delete('/api/queue-lists', (req, res) => {
   writeQueueLists([]);
+  res.json({ success: true });
+});
+
+app.get('/api/credits', (req, res) => {
+  res.json(readCredits());
+});
+
+app.delete('/api/credits', (req, res) => {
+  writeCredits([]);
   res.json({ success: true });
 });
 

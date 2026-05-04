@@ -65,6 +65,9 @@ http://localhost:3000/webhook
 | GET | `/wounds` | Show active and closed wounds |
 | GET | `/api/wounds` | Return wounds as JSON |
 | DELETE | `/api/wounds` | Clear wounds and tracked group messages |
+| GET | `/credits` | Show user credit balances |
+| GET | `/api/credits` | Return credit balances as JSON |
+| DELETE | `/api/credits` | Clear credit balances |
 
 ## Deploy to Render
 
@@ -244,6 +247,34 @@ https://your-render-app.onrender.com/wounds
 https://your-render-app.onrender.com/api/wounds
 https://your-render-app.onrender.com/rounds
 https://your-render-app.onrender.com/api/rounds
+```
+
+## Credits
+
+Credit data is stored in `credits.json`. The command works only in a private chat with the LINE OA.
+
+Add credit:
+
+```text
+C+100
+C+200, C+59
+```
+
+User menu keywords:
+
+```text
+เช็คยอดเงิน
+แผลที่กำลังติด
+ถอนยอดเงิน
+```
+
+The bot replies with LINE Flex Message cards when `LINE_CHANNEL_ACCESS_TOKEN` is set. If the token is not set, the webhook still records credit data and logs, but it cannot send cards back to LINE.
+
+Credit balances can be viewed at:
+
+```text
+https://your-render-app.onrender.com/credits
+https://your-render-app.onrender.com/api/credits
 ```
 
 ## Unsend Detection
