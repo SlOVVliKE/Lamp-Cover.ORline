@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
@@ -587,4 +588,10 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
   } finally {
     await server.stop();
   }
+});
+
+test('credit flex cards do not attach quick reply buttons', () => {
+  const source = fs.readFileSync('server.js', 'utf8');
+
+  assert.equal(source.includes('quickReply'), false);
 });

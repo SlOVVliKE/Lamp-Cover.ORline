@@ -719,30 +719,8 @@ function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, row
   };
 }
 
-function withCreditQuickReplies(message) {
-  return {
-    ...message,
-    quickReply: {
-      items: [
-        {
-          type: 'action',
-          action: { type: 'message', label: 'เช็คยอดเงิน', text: 'เช็คยอดเงิน' }
-        },
-        {
-          type: 'action',
-          action: { type: 'message', label: 'แผลที่กำลังติด', text: 'แผลที่กำลังติด' }
-        },
-        {
-          type: 'action',
-          action: { type: 'message', label: 'ถอนยอดเงิน', text: 'ถอนยอดเงิน' }
-        }
-      ]
-    }
-  };
-}
-
 function buildCreditAddedFlex(amount, snapshot) {
-  return withCreditQuickReplies({
+  return {
     type: 'flex',
     altText: `เพิ่มเครดิตสำเร็จ +${formatPoints(amount)} แต้ม`,
     contents: buildCreditBubble({
@@ -758,11 +736,11 @@ function buildCreditAddedFlex(amount, snapshot) {
       ],
       footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
     })
-  });
+  };
 }
 
 function buildBalanceFlex(snapshot) {
-  return withCreditQuickReplies({
+  return {
     type: 'flex',
     altText: `ยอดแต้มคงเหลือ ${formatPoints(snapshot.credit.balance)} แต้ม`,
     contents: buildCreditBubble({
@@ -778,7 +756,7 @@ function buildBalanceFlex(snapshot) {
       ],
       footer: 'ตรวจสอบโดยระบบ'
     })
-  });
+  };
 }
 
 function buildActiveWoundsFlex(snapshot) {
@@ -788,7 +766,7 @@ function buildActiveWoundsFlex(snapshot) {
     return flexRow(`#${String(wound.id || '').slice(-6)} ${label}`, `vs ${opponent || '-'} ${formatPoints(getWoundAmount(wound))}`, '#F59E0B');
   });
 
-  return withCreditQuickReplies({
+  return {
     type: 'flex',
     altText: `แผลที่กำลังติด ${snapshot.activeWounds.length} รายการ`,
     contents: buildCreditBubble({
@@ -808,11 +786,11 @@ function buildActiveWoundsFlex(snapshot) {
           ],
       footer: ''
     })
-  });
+  };
 }
 
 function buildWithdrawFlex(snapshot) {
-  return withCreditQuickReplies({
+  return {
     type: 'flex',
     altText: `ถอนยอดเงินได้ ${formatPoints(snapshot.withdrawableBalance)} แต้ม`,
     contents: buildCreditBubble({
@@ -828,7 +806,7 @@ function buildWithdrawFlex(snapshot) {
       ],
       footer: 'ยอดถอนได้ = ยอดคงเหลือ - แต้มที่กำลังใช้อยู่'
     })
-  });
+  };
 }
 
 function handleCreditEvent(event) {
