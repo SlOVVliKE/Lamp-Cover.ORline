@@ -141,6 +141,46 @@ Admin registrations can be viewed at:
 https://your-render-app.onrender.com/admins
 ```
 
+## Wounds / Bonds
+
+In a group chat, the app creates an active wound when a user replies to another user's tracked message with an accept keyword.
+LINE sends the quoted message ID as `message.quotedMessageId`, so the original message must already have been received by the webhook.
+
+Tracked opening keywords:
+
+```text
+ซล, ล, ไล่, +5ซล, +5ล
+ซย, ซถ, ย, ถ.ยัง, ถอย, +5ซย, +5ซถ, +5ย, +5ถ
+```
+
+Accepted reply keywords:
+
+```text
+ต, ติด, ครับ, เค, จ้า
+```
+
+Examples:
+
+```text
+ซล1000
+ซย500
+230-250a200
+```
+
+A registered admin can close all active wounds in the current LINE group with:
+
+```text
+แจ้งผล 50
+แจ้งผล40
+```
+
+Wounds can be viewed at:
+
+```text
+https://your-render-app.onrender.com/wounds
+https://your-render-app.onrender.com/api/wounds
+```
+
 ## Notes
 
 - `logs.json` จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน
