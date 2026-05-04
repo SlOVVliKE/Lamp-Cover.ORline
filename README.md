@@ -56,6 +56,12 @@ http://localhost:3000/webhook
 | GET | `/logs` | แสดง log เป็นตาราง HTML |
 | GET | `/api/logs` | ส่ง log เป็น JSON |
 | DELETE | `/api/logs` | ล้าง log ทั้งหมด |
+| GET | `/rounds` | Show queue rounds |
+| GET | `/api/rounds` | Return queue rounds as JSON |
+| DELETE | `/api/rounds` | Clear queue rounds and related wound data |
+| GET | `/wounds` | Show active and closed wounds |
+| GET | `/api/wounds` | Return wounds as JSON |
+| DELETE | `/api/wounds` | Clear wounds and tracked group messages |
 
 ## Deploy to Render
 
@@ -74,6 +80,7 @@ Start Command: npm start
 
 ```text
 LINE_CHANNEL_SECRET=your_line_channel_secret
+LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:
@@ -143,8 +150,30 @@ https://your-render-app.onrender.com/admins
 
 ## Wounds / Bonds
 
-In a group chat, the app creates an active wound when a user replies to another user's tracked message with an accept keyword.
+In a group chat, the app creates an active wound only while a queue round is open.
 LINE sends the quoted message ID as `message.quotedMessageId`, so the original message must already have been received by the webhook.
+
+The bot can reply to group commands when `LINE_CHANNEL_ACCESS_TOKEN` is set.
+
+Open a queue round:
+
+```text
+เปิด กอดก้อนเมฆ
+เปิด กอดก้อนเมฆ 300-320
+เปิด น้องเหมียว ช่างไม่ตี
+```
+
+Close the current queue round:
+
+```text
+ปิด
+```
+
+If the builder price is known after close, send:
+
+```text
+ราคาช่าง 300-320
+```
 
 Tracked opening keywords:
 
@@ -167,18 +196,22 @@ Examples:
 230-250a200
 ```
 
-A registered admin can close all active wounds in the current LINE group with:
+A registered admin confirms the result with a two-step command:
 
 ```text
 แจ้งผล 50
 แจ้งผล40
 ```
 
+The first result command asks for confirmation. Send the same `แจ้งผล ...` again within 5 minutes to close active wounds and mark the queue round result.
+
 Wounds can be viewed at:
 
 ```text
 https://your-render-app.onrender.com/wounds
 https://your-render-app.onrender.com/api/wounds
+https://your-render-app.onrender.com/rounds
+https://your-render-app.onrender.com/api/rounds
 ```
 
 ## Notes

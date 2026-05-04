@@ -81,8 +81,21 @@ test('creates an active wound when a group user replies with an accept keyword',
     await clearJson(server.baseUrl, '/api/logs');
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
 
     await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-admin-open-1', text: 'I AM ADMIN : กลุ่มไทย1' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G1', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-round-open-1', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000000001
+      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G1', userId: 'Ubuyer' },
@@ -114,13 +127,14 @@ test('creates an active wound when a group user replies with an accept keyword',
   }
 });
 
-test('closes active group wounds when a registered admin sends a result command', async () => {
+test('requires duplicate result command before closing active wounds', async () => {
   const server = await startServer();
 
   try {
     await clearJson(server.baseUrl, '/api/logs');
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
 
     await postWebhook(server.baseUrl, [
       {
@@ -128,6 +142,12 @@ test('closes active group wounds when a registered admin sends a result command'
         source: { type: 'user', userId: 'Uadmin' },
         message: { type: 'text', id: 'm-admin-1', text: 'I AM ADMIN : กลุ่มไทย1' },
         timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-round-open-2', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000000500
       },
       {
         type: 'message',
@@ -144,8 +164,20 @@ test('closes active group wounds when a registered admin sends a result command'
       {
         type: 'message',
         source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-round-close-2', text: 'ปิด' },
+        timestamp: 1710000002500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
         message: { type: 'text', id: 'm-result-2', text: 'แจ้งผล 50' },
         timestamp: 1710000003000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-3', text: 'แจ้งผล 50' },
+        timestamp: 1710000004000
       }
     ]);
 
@@ -157,6 +189,155 @@ test('closes active group wounds when a registered admin sends a result command'
     assert.equal(wounds[0].status, 'closed');
     assert.equal(wounds[0].result, '50');
     assert.equal(wounds[0].closedByUserId, 'Uadmin');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('opens a queue round and ignores new wounds after close', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-admin-round', text: 'I AM ADMIN : กลุ่มไทย1' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Uadmin' },
+        replyToken: 'reply-open',
+        message: { type: 'text', id: 'm-open-round', text: 'เปิด กอดก้อนเมฆ 300-320' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Ubuyer' },
+        message: { type: 'text', id: 'm-open-trade', text: 'ซล1000' },
+        timestamp: 1710000002000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Useller' },
+        message: { type: 'text', id: 'm-open-accept', quotedMessageId: 'm-open-trade', text: 'ต' },
+        timestamp: 1710000003000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Uadmin' },
+        replyToken: 'reply-close',
+        message: { type: 'text', id: 'm-close-round', text: 'ปิด' },
+        timestamp: 1710000004000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Ubuyer2' },
+        message: { type: 'text', id: 'm-late-trade', text: 'ซล2000' },
+        timestamp: 1710000005000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G3', userId: 'Useller2' },
+        message: { type: 'text', id: 'm-late-accept', quotedMessageId: 'm-late-trade', text: 'ต' },
+        timestamp: 1710000006000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].roundName, 'กอดก้อนเมฆ');
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds.length, 1);
+    assert.equal(rounds[0].queueName, 'กอดก้อนเมฆ');
+    assert.equal(rounds[0].priceRaw, '300-320');
+    assert.equal(rounds[0].status, 'closed');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('confirms result twice and records the queue price verdict', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-admin-result', text: 'I AM ADMIN : กลุ่มไทย1' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-open-result-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Ubuyer' },
+        message: { type: 'text', id: 'm-result-trade', text: 'ซล1000' },
+        timestamp: 1710000002000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Useller' },
+        message: { type: 'text', id: 'm-result-accept', quotedMessageId: 'm-result-trade', text: 'เค' },
+        timestamp: 1710000003000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-close', text: 'ปิด' },
+        timestamp: 1710000004000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-price', text: 'ราคาช่าง 300-320' },
+        timestamp: 1710000005000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-first', text: 'แจ้งผล 438' },
+        timestamp: 1710000006000
+      }
+    ]);
+
+    let wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].status, 'active');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-second', text: 'แจ้งผล 438' },
+        timestamp: 1710000007000
+      }
+    ]);
+
+    wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].status, 'closed');
+    assert.equal(wounds[0].result, '438');
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].status, 'resulted');
+    assert.equal(rounds[0].result, '438');
+    assert.equal(rounds[0].resultIcon, '✅');
   } finally {
     await server.stop();
   }

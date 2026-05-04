@@ -8,15 +8,19 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
+const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
 const ADMIN_FILE = path.join(__dirname, 'admins.json');
 const MESSAGE_FILE = path.join(__dirname, 'messages.json');
 const WOUND_FILE = path.join(__dirname, 'wounds.json');
+const ROUND_FILE = path.join(__dirname, 'rounds.json');
 const MAX_LOGS = 1000;
 const MAX_ADMINS = 1000;
 const MAX_MESSAGES = 3000;
 const MAX_WOUNDS = 1000;
+const MAX_ROUNDS = 1000;
+const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 
 function ensureJsonFile(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -71,6 +75,14 @@ function readWounds() {
 
 function writeWounds(wounds) {
   writeJsonArray(WOUND_FILE, sortWounds(wounds), MAX_WOUNDS);
+}
+
+function readRounds() {
+  return sortRounds(readJsonArray(ROUND_FILE, 'rounds.json'));
+}
+
+function writeRounds(rounds) {
+  writeJsonArray(ROUND_FILE, sortRounds(rounds), MAX_ROUNDS);
 }
 
 function escapeHtml(value) {
@@ -134,6 +146,10 @@ function sortWounds(wounds) {
 
     return (woundB.openedTimestamp || 0) - (woundA.openedTimestamp || 0);
   });
+}
+
+function sortRounds(rounds) {
+  return [...rounds].sort((roundA, roundB) => (roundB.openedTimestamp || 0) - (roundA.openedTimestamp || 0));
 }
 
 function escapeRegExp(value) {
@@ -223,6 +239,178 @@ function parseAcceptMessage(message) {
 function parseResultCommand(message) {
   const match = normalizeMessageText(message).match(/^แจ้งผล\s*(\d+)$/i);
   return match ? match[1] : null;
+}
+
+function parsePriceRange(message) {
+  const match = String(message || '').match(/(\d+)\s*-\s*(\d+)/);
+  if (!match) return null;
+
+  const low = Number(match[1]);
+  const high = Number(match[2]);
+  const min = Math.min(low, high);
+  const max = Math.max(low, high);
+
+  return {
+    raw: `${match[1]}-${match[2]}`,
+    low: min,
+    high: max
+  };
+}
+
+function parseOpenCommand(message) {
+  const match = normalizeMessageText(message).match(/^เปิด\s+(.+)$/i);
+  if (!match) return null;
+
+  let queueName = match[1].trim();
+  const price = parsePriceRange(queueName);
+  const noBuilderPrice = /ช่างไม่ตี|ไม่ตี/.test(queueName);
+
+  if (price) {
+    queueName = queueName.replace(/\d+\s*-\s*\d+/, '').trim();
+  }
+
+  if (noBuilderPrice) {
+    queueName = queueName.replace(/เบื้องต้น|ช่างไม่ตี|ไม่ตี/g, '').trim();
+  }
+
+  if (!queueName) return null;
+
+  return {
+    queueName,
+    price,
+    noBuilderPrice
+  };
+}
+
+function parseCloseCommand(message) {
+  return normalizeMessageText(message) === 'ปิด';
+}
+
+function parseBuilderPriceCommand(message) {
+  const match = normalizeMessageText(message).match(/^ราคาช่าง\s*(.+)$/i);
+  if (!match) return null;
+
+  return parsePriceRange(match[1]);
+}
+
+function getLatestRoundForGroup(groupId) {
+  return readRounds().find((round) => round.groupId === groupId) || null;
+}
+
+function getOpenRoundForGroup(groupId) {
+  return readRounds().find((round) => round.groupId === groupId && round.status === 'open') || null;
+}
+
+function upsertRound(roundEntry) {
+  const rounds = readRounds().filter((round) => round.id !== roundEntry.id);
+  writeRounds([roundEntry, ...rounds]);
+  return roundEntry;
+}
+
+function getPriceFields(price) {
+  if (!price) {
+    return {
+      priceRaw: '',
+      priceLow: null,
+      priceHigh: null
+    };
+  }
+
+  return {
+    priceRaw: price.raw,
+    priceLow: price.low,
+    priceHigh: price.high
+  };
+}
+
+function getRoundPrice(round) {
+  if (!round?.priceRaw || round.priceLow === null || round.priceHigh === null) {
+    return null;
+  }
+
+  return {
+    raw: round.priceRaw,
+    low: Number(round.priceLow),
+    high: Number(round.priceHigh)
+  };
+}
+
+function buildOpenReply(round) {
+  if (round.noBuilderPrice) {
+    return `${round.queueName}\n\nเบื้องต้นช่างไม่ตี ⛔️\n\n🚀🚀🚀🚀🚀`;
+  }
+
+  if (round.priceRaw) {
+    return `${round.queueName}\n\nช่าง ${round.priceRaw}⛔️\n\n🚀🚀🚀🚀🚀`;
+  }
+
+  return `${round.queueName}\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀`;
+}
+
+function buildCloseReply(round) {
+  return `❌❌❌❌ ปิด ❌❌❌❌\n\n3 2 1 ไป๊!! 🚀🚀🚀\n\n${round.queueName}\n\n⛔หลังปิดไม่ติดทุกกรณี⛔`;
+}
+
+function getResultIcon(round, result) {
+  const resultNumber = Number(result);
+  const price = getRoundPrice(round);
+
+  if (!price || Number.isNaN(resultNumber)) {
+    return '➖';
+  }
+
+  if (resultNumber > price.high) return '✅';
+  if (resultNumber < price.low) return '❌';
+  return '➖';
+}
+
+function buildRoundResultLine(round) {
+  if (!round.result) {
+    return round.queueName;
+  }
+
+  if (round.priceRaw) {
+    return `${round.queueName} ${round.priceRaw} ${round.result}${round.resultIcon || getResultIcon(round, round.result)}`;
+  }
+
+  return `${round.queueName} ช่างไม่ต่อย ${round.result}➖`;
+}
+
+function buildQueueSummary(groupId) {
+  const rounds = readRounds()
+    .filter((round) => round.groupId === groupId)
+    .sort((roundA, roundB) => (roundA.openedTimestamp || 0) - (roundB.openedTimestamp || 0));
+  const lines = rounds.map(buildRoundResultLine);
+
+  return `คิวจุด✅\n\n${lines.join('\n')}`;
+}
+
+async function replyToLine(replyToken, texts) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !replyToken || texts.length === 0) {
+    return null;
+  }
+
+  const response = await fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages: texts.slice(0, 5).map((text) => ({
+        type: 'text',
+        text
+      }))
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`LINE reply failed: ${response.status} ${errorText}`);
+  }
+
+  return response;
 }
 
 function verifyLineSignature(req, res, next) {
@@ -325,11 +513,18 @@ function trackGroupMessage(event) {
     return null;
   }
 
+  const openRound = getOpenRoundForGroup(event.source?.groupId);
+  if (!openRound) {
+    return null;
+  }
+
   const source = event.source || {};
   const messageText = getMessageText(event);
   const messageEntry = {
     id: event.message.id,
     groupId: source.groupId || '',
+    roundId: openRound.id,
+    roundName: openRound.queueName,
     userId: source.userId || '',
     text: messageText,
     trade: parseTradeMessage(messageText),
@@ -351,11 +546,15 @@ function createWoundFromReply(event) {
   if (!isGroupTextMessage(event)) return null;
 
   const source = event.source || {};
+  const openRound = getOpenRoundForGroup(source.groupId);
+  if (!openRound) return null;
+
   const acceptKeyword = parseAcceptMessage(getMessageText(event));
   const quotedMessage = findTrackedMessage(event.message.quotedMessageId);
 
   if (!acceptKeyword || !quotedMessage?.trade) return null;
   if (quotedMessage.groupId !== source.groupId) return null;
+  if (quotedMessage.roundId !== openRound.id) return null;
   if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
 
   const nowTimestamp = event.timestamp || Date.now();
@@ -364,6 +563,7 @@ function createWoundFromReply(event) {
     (wound) =>
       wound.status === 'active' &&
       wound.groupId === source.groupId &&
+      wound.roundId === openRound.id &&
       wound.openMessageId === quotedMessage.id &&
       wound.accepterUserId === source.userId
   );
@@ -376,6 +576,8 @@ function createWoundFromReply(event) {
     id: `${source.groupId}:${quotedMessage.id}:${event.message.id || nowTimestamp}`,
     status: 'active',
     groupId: source.groupId || '',
+    roundId: openRound.id,
+    roundName: openRound.queueName,
     openerUserId: quotedMessage.userId,
     accepterUserId: source.userId || '',
     openMessageId: quotedMessage.id,
@@ -407,19 +609,12 @@ function isRegisteredAdmin(userId, groupId) {
   });
 }
 
-function closeGroupWounds(event) {
-  if (!isGroupTextMessage(event)) return null;
-
+function closeWoundsForRound(event, result, round) {
   const source = event.source || {};
-  const result = parseResultCommand(getMessageText(event));
-  if (!result || !isRegisteredAdmin(source.userId, source.groupId)) {
-    return null;
-  }
-
   const nowTimestamp = event.timestamp || Date.now();
   let closedCount = 0;
   const wounds = readWounds().map((wound) => {
-    if (wound.status !== 'active' || wound.groupId !== source.groupId) {
+    if (wound.status !== 'active' || wound.groupId !== source.groupId || wound.roundId !== round.id) {
       return wound;
     }
 
@@ -439,9 +634,150 @@ function closeGroupWounds(event) {
     writeWounds(wounds);
   }
 
-  return {
+  return closedCount;
+}
+
+function handleQueueAdminCommand(event) {
+  if (!isGroupTextMessage(event)) return null;
+
+  const source = event.source || {};
+  const messageText = getMessageText(event);
+  if (!isRegisteredAdmin(source.userId, source.groupId)) {
+    return null;
+  }
+
+  const nowTimestamp = event.timestamp || Date.now();
+  const openCommand = parseOpenCommand(messageText);
+  if (openCommand) {
+    const priceFields = getPriceFields(openCommand.price);
+    const round = {
+      id: `${source.groupId}:${nowTimestamp}:${event.message.id || ''}`,
+      groupId: source.groupId || '',
+      queueName: openCommand.queueName,
+      status: 'open',
+      ...priceFields,
+      noBuilderPrice: openCommand.noBuilderPrice,
+      openedByUserId: source.userId || '',
+      openedMessageId: event.message.id || '',
+      openedTimestamp: nowTimestamp,
+      openedTime: formatDate(nowTimestamp),
+      closedByUserId: '',
+      closedMessageId: '',
+      closedTimestamp: null,
+      closedTime: '',
+      result: '',
+      resultIcon: '',
+      resultTimestamp: null,
+      resultTime: '',
+      pendingResult: null
+    };
+
+    upsertRound(round);
+    return {
+      type: 'round_opened',
+      round,
+      replyTexts: [buildOpenReply(round)]
+    };
+  }
+
+  if (parseCloseCommand(messageText)) {
+    const round = getOpenRoundForGroup(source.groupId);
+    if (!round) return null;
+
+    const closedRound = {
+      ...round,
+      status: 'closed',
+      closedByUserId: source.userId || '',
+      closedMessageId: event.message.id || '',
+      closedTimestamp: nowTimestamp,
+      closedTime: formatDate(nowTimestamp),
+      pendingResult: null
+    };
+
+    upsertRound(closedRound);
+    return {
+      type: 'round_closed',
+      round: closedRound,
+      replyTexts: [buildCloseReply(closedRound)]
+    };
+  }
+
+  const builderPrice = parseBuilderPriceCommand(messageText);
+  if (builderPrice) {
+    const round = getLatestRoundForGroup(source.groupId);
+    if (!round || round.status === 'resulted') return null;
+
+    const updatedRound = {
+      ...round,
+      ...getPriceFields(builderPrice),
+      noBuilderPrice: false,
+      priceSetByUserId: source.userId || '',
+      priceSetMessageId: event.message.id || '',
+      priceSetTimestamp: nowTimestamp,
+      priceSetTime: formatDate(nowTimestamp)
+    };
+
+    upsertRound(updatedRound);
+    return {
+      type: 'builder_price_set',
+      round: updatedRound,
+      replyTexts: [`บันทึกราคาช่าง ${builderPrice.raw} สำหรับ ${updatedRound.queueName}`]
+    };
+  }
+
+  const result = parseResultCommand(messageText);
+  if (!result) return null;
+
+  const round = getLatestRoundForGroup(source.groupId);
+  if (!round || round.status === 'open') return null;
+
+  const pendingResult = round.pendingResult;
+  const isConfirmation =
+    pendingResult?.result === result &&
+    pendingResult?.userId === source.userId &&
+    nowTimestamp - pendingResult.timestamp <= RESULT_CONFIRMATION_WINDOW_MS;
+
+  if (!isConfirmation) {
+    const pendingRound = {
+      ...round,
+      pendingResult: {
+        result,
+        userId: source.userId || '',
+        timestamp: nowTimestamp,
+        expiresAt: nowTimestamp + RESULT_CONFIRMATION_WINDOW_MS
+      }
+    };
+
+    upsertRound(pendingRound);
+    return {
+      type: 'result_confirmation_requested',
+      round: pendingRound,
+      result,
+      replyTexts: [`⚠️ ยืนยันผล: ${result}  ส่ง แจ้งผล ${result} อีกครั้งเพื่อยืนยัน (หมดเวลาใน 5 นาที)`]
+    };
+  }
+
+  const resultIcon = getResultIcon(round, result);
+  const resultedRound = {
+    ...round,
+    status: 'resulted',
     result,
-    closedCount
+    resultIcon,
+    resultByUserId: source.userId || '',
+    resultMessageId: event.message.id || '',
+    resultTimestamp: nowTimestamp,
+    resultTime: formatDate(nowTimestamp),
+    pendingResult: null
+  };
+  const closedCount = closeWoundsForRound(event, result, resultedRound);
+
+  upsertRound(resultedRound);
+  return {
+    type: 'result_confirmed',
+    round: resultedRound,
+    result,
+    closedCount,
+    replyTexts: [`${resultedRound.queueName}\n\nผล ${result}///\n\n🚀🚀🚀🚀🚀`, buildQueueSummary(source.groupId)]
   };
 }
 
@@ -449,13 +785,16 @@ ensureJsonFile(LOG_FILE);
 ensureJsonFile(ADMIN_FILE);
 ensureJsonFile(MESSAGE_FILE);
 ensureJsonFile(WOUND_FILE);
+ensureJsonFile(ROUND_FILE);
 
 // LINE signature verification needs the exact raw request body.
 app.post(
   '/webhook',
   express.raw({ type: '*/*', limit: '2mb' }),
   verifyLineSignature,
-  (req, res) => {
+  async (req, res) => {
+    const replyJobs = [];
+
     try {
       const bodyText = req.body ? req.body.toString('utf8') : '{}';
       const payload = bodyText ? JSON.parse(bodyText) : {};
@@ -465,7 +804,7 @@ app.post(
         const newLogs = events.map((event) => {
           const logEntry = createLogEntry(event);
           const adminEntry = upsertAdminFromEvent(event);
-          const closedWounds = closeGroupWounds(event);
+          const queueAction = handleQueueAdminCommand(event);
           const woundEntry = createWoundFromReply(event);
           const trackedMessage = trackGroupMessage(event);
 
@@ -475,9 +814,18 @@ app.post(
             logEntry.adminPriority = adminEntry.priority;
           }
 
-          if (closedWounds) {
-            logEntry.woundsClosed = closedWounds.closedCount;
-            logEntry.result = closedWounds.result;
+          if (queueAction) {
+            logEntry.queueAction = queueAction.type;
+            logEntry.queueName = queueAction.round?.queueName || '';
+            logEntry.result = queueAction.result || '';
+
+            if (typeof queueAction.closedCount === 'number') {
+              logEntry.woundsClosed = queueAction.closedCount;
+            }
+
+            if (Array.isArray(queueAction.replyTexts) && queueAction.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, queueAction.replyTexts));
+            }
           }
 
           if (woundEntry) {
@@ -494,6 +842,10 @@ app.post(
         });
         const logs = readLogs();
         writeLogs([...newLogs, ...logs]);
+      }
+
+      if (replyJobs.length > 0) {
+        await Promise.allSettled(replyJobs);
       }
     } catch (error) {
       console.error('Webhook payload could not be processed:', error.message);
@@ -567,6 +919,7 @@ app.get('/', (req, res) => {
       <a href="/logs">View Logs</a>
       <a href="/admins">Admins</a>
       <a href="/wounds">Wounds</a>
+      <a href="/rounds">Rounds</a>
       <a href="/api/logs">JSON API</a>
       <a href="/webhook">Webhook Path</a>
     </div>
@@ -1066,6 +1419,152 @@ app.get('/wounds', (req, res) => {
 </html>`);
 });
 
+app.get('/rounds', (req, res) => {
+  const rounds = readRounds();
+  const rows = rounds
+    .map(
+      (round) => `<tr>
+        <td>${escapeHtml(round.status)}</td>
+        <td>${escapeHtml(round.openedTime)}</td>
+        <td>${escapeHtml(round.groupId)}</td>
+        <td>${escapeHtml(round.queueName)}</td>
+        <td>${escapeHtml(round.priceRaw || (round.noBuilderPrice ? 'ช่างไม่ตี' : ''))}</td>
+        <td>${escapeHtml(round.closedTime)}</td>
+        <td>${escapeHtml(round.result)}</td>
+        <td>${escapeHtml(round.resultIcon)}</td>
+      </tr>`
+    )
+    .join('');
+
+  res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LINE Queue Rounds</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #1f2937;
+      background: #f3f4f6;
+    }
+    main {
+      max-width: 1180px;
+      margin: 32px auto;
+      padding: 0 20px 40px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      color: #111827;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: #ffffff;
+      background: #047857;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button.danger {
+      background: #b91c1c;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 940px;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th {
+      background: #f9fafb;
+      color: #374151;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .empty {
+      padding: 28px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>LINE Queue Rounds</h1>
+      <div class="actions">
+        <a class="button" href="/rounds">Refresh</a>
+        <a class="button" href="/wounds">Wounds</a>
+        <button class="danger" type="button" onclick="clearRounds()">Clear Rounds</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      ${
+        rows
+          ? `<table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Opened</th>
+                  <th>Group ID</th>
+                  <th>Queue Name</th>
+                  <th>Builder Price</th>
+                  <th>Closed</th>
+                  <th>Result</th>
+                  <th>Icon</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>`
+          : '<div class="empty">No rounds yet.</div>'
+      }
+    </div>
+  </main>
+  <script>
+    async function clearRounds() {
+      if (!confirm('Clear all rounds?')) return;
+
+      const response = await fetch('/api/rounds', { method: 'DELETE' });
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        alert('Unable to clear rounds.');
+      }
+    }
+  </script>
+</body>
+</html>`);
+});
+
 app.get('/api/logs', (req, res) => {
   res.json(readLogs());
 });
@@ -1091,6 +1590,17 @@ app.get('/api/wounds', (req, res) => {
 app.delete('/api/wounds', (req, res) => {
   writeWounds([]);
   writeMessages([]);
+  res.json({ success: true });
+});
+
+app.get('/api/rounds', (req, res) => {
+  res.json(readRounds());
+});
+
+app.delete('/api/rounds', (req, res) => {
+  writeRounds([]);
+  writeMessages([]);
+  writeWounds([]);
   res.json({ success: true });
 });
 

@@ -4,6 +4,7 @@ logs.json
 admins.json
 messages.json
 wounds.json
+rounds.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
