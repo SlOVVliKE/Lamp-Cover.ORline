@@ -387,3 +387,56 @@ test('detects a group unsend event and builds a group notification', async () =>
     await server.stop();
   }
 });
+
+test('saves a queue list posted by a group admin', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ บ้านคุ้ม ต.คูเมือง',
+      'อ.มหาชนะชัย จ.ยโสธร',
+      '4  พฤษภาคม  2569',
+      '',
+      'กอดก้อนเมฆ',
+      'น้องเหมียว',
+      'ส.เจริญสายใจ',
+      'กุ้งเจริญทรัพย์',
+      '',
+      'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-admin-queue-list', text: 'I AM ADMIN : กลุ่มไทย1' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G6', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-list', text: queueText },
+        timestamp: 1710000001000
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.equal(queueLists[0].title, 'บ้านคุ้ม ต.คูเมือง อ.มหาชนะชัย จ.ยโสธร');
+    assert.equal(queueLists[0].dateText, '4 พฤษภาคม 2569');
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      ['กอดก้อนเมฆ', 'น้องเหมียว', 'ส.เจริญสายใจ', 'กุ้งเจริญทรัพย์']
+    );
+    assert.equal(queueLists[0].note, 'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.queueListSaved), true);
+  } finally {
+    await server.stop();
+  }
+});

@@ -15,11 +15,13 @@ const ADMIN_FILE = path.join(__dirname, 'admins.json');
 const MESSAGE_FILE = path.join(__dirname, 'messages.json');
 const WOUND_FILE = path.join(__dirname, 'wounds.json');
 const ROUND_FILE = path.join(__dirname, 'rounds.json');
+const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
 const MAX_LOGS = 1000;
 const MAX_ADMINS = 1000;
 const MAX_MESSAGES = 3000;
 const MAX_WOUNDS = 1000;
 const MAX_ROUNDS = 1000;
+const MAX_QUEUE_LISTS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 
 function ensureJsonFile(filePath) {
@@ -83,6 +85,14 @@ function readRounds() {
 
 function writeRounds(rounds) {
   writeJsonArray(ROUND_FILE, sortRounds(rounds), MAX_ROUNDS);
+}
+
+function readQueueLists() {
+  return sortQueueLists(readJsonArray(QUEUE_LIST_FILE, 'queueLists.json'));
+}
+
+function writeQueueLists(queueLists) {
+  writeJsonArray(QUEUE_LIST_FILE, sortQueueLists(queueLists), MAX_QUEUE_LISTS);
 }
 
 function escapeHtml(value) {
@@ -150,6 +160,10 @@ function sortWounds(wounds) {
 
 function sortRounds(rounds) {
   return [...rounds].sort((roundA, roundB) => (roundB.openedTimestamp || 0) - (roundA.openedTimestamp || 0));
+}
+
+function sortQueueLists(queueLists) {
+  return [...queueLists].sort((listA, listB) => (listB.timestamp || 0) - (listA.timestamp || 0));
 }
 
 function escapeRegExp(value) {
@@ -241,6 +255,63 @@ function parseResultCommand(message) {
   return match ? match[1] : null;
 }
 
+function normalizeQueueLine(line) {
+  return String(line || '').trim().replace(/\s+/g, ' ');
+}
+
+function looksLikeDateLine(line) {
+  return /\d/.test(line) && /(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม|\d{4})/.test(line);
+}
+
+function parseQueueListMessage(message) {
+  const rawLines = String(message || '').replace(/\r\n/g, '\n').split('\n');
+  const lines = rawLines.map((line) => normalizeQueueLine(line));
+  const firstContentIndex = lines.findIndex((line) => line.length > 0);
+
+  if (firstContentIndex < 0 || !lines[firstContentIndex].startsWith('คิวจุดรายการ')) {
+    return null;
+  }
+
+  const firstBlankAfterHeader = lines.findIndex((line, index) => index > firstContentIndex && line.length === 0);
+  const itemStartIndex = firstBlankAfterHeader >= 0 ? firstBlankAfterHeader + 1 : firstContentIndex + 1;
+  const headerLines = lines
+    .slice(firstContentIndex, firstBlankAfterHeader >= 0 ? firstBlankAfterHeader : itemStartIndex)
+    .filter(Boolean);
+  const headerParts = headerLines.map((line, index) =>
+    index === 0 ? line.replace(/^คิวจุดรายการ\s*/, '').trim() : line
+  );
+  const dateLineIndex = headerParts.findIndex(looksLikeDateLine);
+  const dateText = dateLineIndex >= 0 ? headerParts[dateLineIndex] : '';
+  const title = headerParts.filter((_, index) => index !== dateLineIndex).join(' ').trim();
+  const itemLines = [];
+  let note = '';
+
+  for (const line of lines.slice(itemStartIndex)) {
+    if (!line) continue;
+    if (/^หมายเหตุ/.test(line)) {
+      note = line;
+      break;
+    }
+
+    itemLines.push(line);
+  }
+
+  if (!title || itemLines.length === 0) {
+    return null;
+  }
+
+  return {
+    title,
+    dateText,
+    items: itemLines.map((name, index) => ({
+      order: index + 1,
+      name
+    })),
+    note,
+    rawText: String(message || '')
+  };
+}
+
 function formatClockTime(timestamp) {
   if (!timestamp) return '';
   const date = new Date(timestamp);
@@ -318,6 +389,10 @@ function getLatestRoundForGroup(groupId) {
 
 function getOpenRoundForGroup(groupId) {
   return readRounds().find((round) => round.groupId === groupId && round.status === 'open') || null;
+}
+
+function getLatestQueueListForGroup(groupId) {
+  return readQueueLists().find((queueList) => queueList.groupId === groupId) || null;
 }
 
 function upsertRound(roundEntry) {
@@ -399,9 +474,23 @@ function buildQueueSummary(groupId) {
   const rounds = readRounds()
     .filter((round) => round.groupId === groupId)
     .sort((roundA, roundB) => (roundA.openedTimestamp || 0) - (roundB.openedTimestamp || 0));
-  const lines = rounds.map(buildRoundResultLine);
+  const queueList = getLatestQueueListForGroup(groupId);
 
-  return `คิวจุด✅\n\n${lines.join('\n')}`;
+  if (!queueList) {
+    const lines = rounds.map(buildRoundResultLine);
+    return `คิวจุด✅\n\n${lines.join('\n')}`;
+  }
+
+  const roundsByName = new Map(
+    rounds.map((round) => [normalizeGroupName(round.queueName), round])
+  );
+  const lines = queueList.items.map((item) => {
+    const round = roundsByName.get(normalizeGroupName(item.name));
+    return round ? buildRoundResultLine(round) : item.name;
+  });
+  const note = queueList.note ? `\n\n${queueList.note}` : '';
+
+  return `คิวจุด✅\n\n${lines.join('\n')}${note}`;
 }
 
 async function replyToLine(replyToken, texts) {
@@ -744,6 +833,37 @@ function isRegisteredAdmin(userId, groupId) {
   });
 }
 
+function handleQueueListMessage(event) {
+  if (!isGroupTextMessage(event)) return null;
+
+  const source = event.source || {};
+  if (!isRegisteredAdmin(source.userId, source.groupId)) {
+    return null;
+  }
+
+  const queueList = parseQueueListMessage(getMessageText(event));
+  if (!queueList) return null;
+
+  const nowTimestamp = event.timestamp || Date.now();
+  const entry = {
+    id: `${source.groupId}:${nowTimestamp}:${event.message.id || ''}`,
+    groupId: source.groupId || '',
+    title: queueList.title,
+    dateText: queueList.dateText,
+    items: queueList.items,
+    note: queueList.note,
+    rawText: queueList.rawText,
+    createdByUserId: source.userId || '',
+    messageId: event.message.id || '',
+    timestamp: nowTimestamp,
+    time: formatDate(nowTimestamp)
+  };
+  const queueLists = readQueueLists().filter((list) => list.groupId !== entry.groupId);
+
+  writeQueueLists([entry, ...queueLists]);
+  return entry;
+}
+
 function closeWoundsForRound(event, result, round) {
   const source = event.source || {};
   const nowTimestamp = event.timestamp || Date.now();
@@ -921,6 +1041,7 @@ ensureJsonFile(ADMIN_FILE);
 ensureJsonFile(MESSAGE_FILE);
 ensureJsonFile(WOUND_FILE);
 ensureJsonFile(ROUND_FILE);
+ensureJsonFile(QUEUE_LIST_FILE);
 
 // LINE signature verification needs the exact raw request body.
 app.post(
@@ -941,6 +1062,7 @@ app.post(
         for (const event of events) {
           const logEntry = createLogEntry(event);
           const adminEntry = upsertAdminFromEvent(event);
+          const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
           const woundEntry = createWoundFromReply(event);
           const trackedMessage = trackGroupMessage(event);
@@ -950,6 +1072,12 @@ app.post(
             logEntry.adminRegistered = true;
             logEntry.adminGroupName = adminEntry.groupName;
             logEntry.adminPriority = adminEntry.priority;
+          }
+
+          if (queueListEntry) {
+            logEntry.queueListSaved = true;
+            logEntry.queueListTitle = queueListEntry.title;
+            logEntry.queueListItemCount = queueListEntry.items.length;
           }
 
           if (queueAction) {
@@ -1066,6 +1194,7 @@ app.get('/', (req, res) => {
       <a href="/admins">Admins</a>
       <a href="/wounds">Wounds</a>
       <a href="/rounds">Rounds</a>
+      <a href="/queue-lists">Queue Lists</a>
       <a href="/api/logs">JSON API</a>
       <a href="/webhook">Webhook Path</a>
     </div>
@@ -1711,6 +1840,150 @@ app.get('/rounds', (req, res) => {
 </html>`);
 });
 
+app.get('/queue-lists', (req, res) => {
+  const queueLists = readQueueLists();
+  const rows = queueLists
+    .map((queueList) => {
+      const items = queueList.items.map((item) => `${item.order}. ${item.name}`).join('<br>');
+
+      return `<tr>
+        <td>${escapeHtml(queueList.time)}</td>
+        <td>${escapeHtml(queueList.groupId)}</td>
+        <td>${escapeHtml(queueList.title)}</td>
+        <td>${escapeHtml(queueList.dateText)}</td>
+        <td>${items}</td>
+        <td>${escapeHtml(queueList.note)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LINE Queue Lists</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #1f2937;
+      background: #f3f4f6;
+    }
+    main {
+      max-width: 1180px;
+      margin: 32px auto;
+      padding: 0 20px 40px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      color: #111827;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: #ffffff;
+      background: #047857;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button.danger {
+      background: #b91c1c;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th {
+      background: #f9fafb;
+      color: #374151;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .empty {
+      padding: 28px;
+      color: #6b7280;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <h1>LINE Queue Lists</h1>
+      <div class="actions">
+        <a class="button" href="/queue-lists">Refresh</a>
+        <a class="button" href="/rounds">Rounds</a>
+        <button class="danger" type="button" onclick="clearQueueLists()">Clear Queue Lists</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      ${
+        rows
+          ? `<table>
+              <thead>
+                <tr>
+                  <th>Saved</th>
+                  <th>Group ID</th>
+                  <th>Title</th>
+                  <th>Date</th>
+                  <th>Items</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>`
+          : '<div class="empty">No queue lists yet.</div>'
+      }
+    </div>
+  </main>
+  <script>
+    async function clearQueueLists() {
+      if (!confirm('Clear all queue lists?')) return;
+
+      const response = await fetch('/api/queue-lists', { method: 'DELETE' });
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        alert('Unable to clear queue lists.');
+      }
+    }
+  </script>
+</body>
+</html>`);
+});
+
 app.get('/api/logs', (req, res) => {
   res.json(readLogs());
 });
@@ -1747,6 +2020,15 @@ app.delete('/api/rounds', (req, res) => {
   writeRounds([]);
   writeMessages([]);
   writeWounds([]);
+  res.json({ success: true });
+});
+
+app.get('/api/queue-lists', (req, res) => {
+  res.json(readQueueLists());
+});
+
+app.delete('/api/queue-lists', (req, res) => {
+  writeQueueLists([]);
   res.json({ success: true });
 });
 

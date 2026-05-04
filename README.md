@@ -59,6 +59,9 @@ http://localhost:3000/webhook
 | GET | `/rounds` | Show queue rounds |
 | GET | `/api/rounds` | Return queue rounds as JSON |
 | DELETE | `/api/rounds` | Clear queue rounds and related wound data |
+| GET | `/queue-lists` | Show saved queue lists |
+| GET | `/api/queue-lists` | Return saved queue lists as JSON |
+| DELETE | `/api/queue-lists` | Clear saved queue lists |
 | GET | `/wounds` | Show active and closed wounds |
 | GET | `/api/wounds` | Return wounds as JSON |
 | DELETE | `/api/wounds` | Clear wounds and tracked group messages |
@@ -154,6 +157,27 @@ In a group chat, the app creates an active wound only while a queue round is ope
 LINE sends the quoted message ID as `message.quotedMessageId`, so the original message must already have been received by the webhook.
 
 The bot can reply to group commands when `LINE_CHANNEL_ACCESS_TOKEN` is set.
+
+Save a queue list by sending a multi-line admin message in the group:
+
+```text
+คิวจุดรายการ บ้านคุ้ม ต.คูเมือง
+อ.มหาชนะชัย จ.ยโสธร
+4  พฤษภาคม  2569
+
+กอดก้อนเมฆ
+น้องเหมียว
+ส.เจริญสายใจ
+
+หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง
+```
+
+Saved queue lists can be viewed at:
+
+```text
+https://your-render-app.onrender.com/queue-lists
+https://your-render-app.onrender.com/api/queue-lists
+```
 
 Open a queue round:
 
