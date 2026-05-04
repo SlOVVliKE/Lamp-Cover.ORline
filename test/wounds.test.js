@@ -74,6 +74,23 @@ async function clearJson(baseUrl, path) {
   await fetch(`${baseUrl}${path}`, { method: 'DELETE' }).catch(() => {});
 }
 
+async function registerAndBindAdmin(baseUrl, groupId, userId = 'Uadmin', groupName = 'กลุ่มไทย') {
+  await postWebhook(baseUrl, [
+    {
+      type: 'message',
+      source: { type: 'user', userId },
+      message: { type: 'text', id: `admin-${groupId}-${userId}`, text: `I AM ADMIN : ${groupName}1` },
+      timestamp: 1710000000000
+    },
+    {
+      type: 'message',
+      source: { type: 'group', groupId, userId },
+      message: { type: 'text', id: `bind-${groupId}-${userId}`, text: `ผูกกลุ่ม : ${groupName}` },
+      timestamp: 1710000000001
+    }
+  ]);
+}
+
 test('creates an active wound when a group user replies with an accept keyword', async () => {
   const server = await startServer();
 
@@ -83,13 +100,9 @@ test('creates an active wound when a group user replies with an accept keyword',
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
 
+    await registerAndBindAdmin(server.baseUrl, 'G1');
+
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-admin-open-1', text: 'I AM ADMIN : กลุ่มไทย1' },
-        timestamp: 1710000000000
-      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G1', userId: 'Uadmin' },
@@ -136,13 +149,9 @@ test('requires duplicate result command before closing active wounds', async () 
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
 
+    await registerAndBindAdmin(server.baseUrl, 'G2');
+
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-admin-1', text: 'I AM ADMIN : กลุ่มไทย1' },
-        timestamp: 1710000000000
-      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
@@ -203,13 +212,9 @@ test('opens a queue round and ignores new wounds after close', async () => {
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
 
+    await registerAndBindAdmin(server.baseUrl, 'G3');
+
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-admin-round', text: 'I AM ADMIN : กลุ่มไทย1' },
-        timestamp: 1710000000000
-      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G3', userId: 'Uadmin' },
@@ -273,13 +278,9 @@ test('confirms result twice and records the queue price verdict', async () => {
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
 
+    await registerAndBindAdmin(server.baseUrl, 'G4');
+
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-admin-result', text: 'I AM ADMIN : กลุ่มไทย1' },
-        timestamp: 1710000000000
-      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
@@ -409,13 +410,9 @@ test('saves a queue list posted by a group admin', async () => {
       'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง'
     ].join('\n');
 
+    await registerAndBindAdmin(server.baseUrl, 'G6');
+
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-admin-queue-list', text: 'I AM ADMIN : กลุ่มไทย1' },
-        timestamp: 1710000000000
-      },
       {
         type: 'message',
         source: { type: 'group', groupId: 'G6', userId: 'Uadmin' },
@@ -436,6 +433,36 @@ test('saves a queue list posted by a group admin', async () => {
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     assert.equal(logs.some((log) => log.queueListSaved), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('does not allow an admin to control an unbound group', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-admin-unbound', text: 'I AM ADMIN : กลุ่มไทย1' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gunbound', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-open-unbound', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000001000
+      }
+    ]);
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds.length, 0);
   } finally {
     await server.stop();
   }

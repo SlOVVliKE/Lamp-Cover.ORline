@@ -191,6 +191,20 @@ function parseAdminCommand(message) {
   };
 }
 
+function parseBindGroupCommand(message) {
+  const text = normalizeMessageText(message);
+  const match = text.match(/^(?:ผูกกลุ่ม|à¸œà¸¹à¸à¸à¸¥à¸¸à¹ˆà¸¡)\s*:\s*(.+)$/i);
+  if (!match) return null;
+
+  const groupName = match[1].trim();
+  if (!groupName) return null;
+
+  return {
+    groupName,
+    groupKey: normalizeGroupName(groupName)
+  };
+}
+
 const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้า'];
 const TRADE_KEYWORDS = [
   { keyword: '+5ซล', side: 'chang_dai' },
@@ -661,6 +675,53 @@ function upsertAdminFromEvent(event) {
   return adminEntry;
 }
 
+function bindGroupFromEvent(event) {
+  if (!isGroupTextMessage(event)) return null;
+
+  const source = event.source || {};
+  const bindCommand = parseBindGroupCommand(getMessageText(event));
+  if (!bindCommand || !source.groupId || !source.userId) {
+    return null;
+  }
+
+  const nowTimestamp = event.timestamp || Date.now();
+  const admins = readAdmins();
+  const targetIndexes = admins
+    .map((admin, index) => ({ admin, index }))
+    .filter(({ admin }) => admin.userId === source.userId && admin.groupKey === bindCommand.groupKey)
+    .map(({ index }) => index);
+
+  if (targetIndexes.length === 0) {
+    return {
+      bound: false,
+      groupName: bindCommand.groupName,
+      groupKey: bindCommand.groupKey,
+      groupId: source.groupId
+    };
+  }
+
+  for (const index of targetIndexes) {
+    admins[index] = {
+      ...admins[index],
+      groupName: bindCommand.groupName,
+      groupKey: bindCommand.groupKey,
+      groupId: source.groupId,
+      boundAt: nowTimestamp,
+      boundTime: formatDate(nowTimestamp)
+    };
+  }
+
+  writeAdmins(admins);
+  return {
+    bound: true,
+    groupName: bindCommand.groupName,
+    groupKey: bindCommand.groupKey,
+    groupId: source.groupId,
+    userId: source.userId,
+    adminCount: targetIndexes.length
+  };
+}
+
 function isGroupTextMessage(event) {
   return event.type === 'message' && event.message?.type === 'text' && event.source?.type === 'group';
 }
@@ -825,11 +886,11 @@ function createWoundFromReply(event) {
 }
 
 function isRegisteredAdmin(userId, groupId) {
-  if (!userId) return false;
+  if (!userId || !groupId) return false;
 
   return readAdmins().some((admin) => {
     if (admin.userId !== userId) return false;
-    return !admin.groupId || admin.groupId === groupId;
+    return admin.groupId === groupId;
   });
 }
 
@@ -1062,6 +1123,7 @@ app.post(
         for (const event of events) {
           const logEntry = createLogEntry(event);
           const adminEntry = upsertAdminFromEvent(event);
+          const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
           const woundEntry = createWoundFromReply(event);
@@ -1072,6 +1134,13 @@ app.post(
             logEntry.adminRegistered = true;
             logEntry.adminGroupName = adminEntry.groupName;
             logEntry.adminPriority = adminEntry.priority;
+          }
+
+          if (bindEntry) {
+            logEntry.groupBindRequested = true;
+            logEntry.groupBindSuccess = bindEntry.bound;
+            logEntry.boundGroupName = bindEntry.groupName;
+            logEntry.boundGroupId = bindEntry.groupId;
           }
 
           if (queueListEntry) {
@@ -1368,6 +1437,7 @@ app.get('/admins', (req, res) => {
         <td>${escapeHtml(admin.groupName)}</td>
         <td>${escapeHtml(admin.priority)}</td>
         <td>${escapeHtml(admin.userId)}</td>
+        <td>${escapeHtml(admin.groupId)}</td>
         <td>${escapeHtml(admin.adminKeyword)}</td>
       </tr>`
     )
@@ -1497,6 +1567,7 @@ app.get('/admins', (req, res) => {
                   <th>Group Name</th>
                   <th>Priority</th>
                   <th>User ID</th>
+                  <th>Group ID</th>
                   <th>Keyword</th>
                 </tr>
               </thead>

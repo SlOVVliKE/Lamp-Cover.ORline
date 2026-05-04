@@ -139,6 +139,14 @@ The bot stores the sender's `userId` as an admin for that group name in `admins.
 The trailing number is the priority, so `group name1` is priority 1 and `group name2` is priority 2.
 The command is accepted only from a private chat source.
 
+After registering in private chat, bind the actual LINE group by sending this command in that group:
+
+```text
+ผูกกลุ่ม : group name
+```
+
+Group admin commands only work after the registered `userId` is bound to the current LINE `groupId`.
+
 You can change the keyword with this environment variable:
 
 ```text
