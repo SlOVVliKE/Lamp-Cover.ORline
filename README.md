@@ -1,0 +1,125 @@
+# LINE Webhook Logger
+
+โปรเจกต์ Node.js Express สำหรับรับ Webhook จาก LINE Messaging API และบันทึก log ลงไฟล์ `logs.json` โดยไม่ต้องใช้ database ภายนอก เหมาะสำหรับ deploy เป็น Web Service บน Render
+
+## Features
+
+- รับ webhook event จาก LINE OA ที่ `POST /webhook`
+- เก็บ `userId`, `groupId`, `roomId`, `sourceType`, `message`, `eventType`, `timestamp`
+- รองรับ text, image, sticker, audio, video, file และ message type อื่น ๆ
+- แสดง log ผ่านหน้าเว็บที่ `GET /logs`
+- ดู log แบบ JSON ที่ `GET /api/logs`
+- ล้าง log ด้วย `DELETE /api/logs`
+- ตรวจสอบ LINE signature ด้วย `LINE_CHANNEL_SECRET`
+- จำกัด log สูงสุด 1000 รายการล่าสุด
+
+## Local Development
+
+ติดตั้ง dependency
+
+```bash
+npm install
+```
+
+สร้างไฟล์ `.env`
+
+```bash
+cp .env.example .env
+```
+
+รัน server
+
+```bash
+npm start
+```
+
+เปิดเว็บ
+
+```text
+http://localhost:3000
+```
+
+Webhook endpoint สำหรับทดสอบ local
+
+```text
+http://localhost:3000/webhook
+```
+
+ถ้าไม่ได้ตั้งค่า `LINE_CHANNEL_SECRET` ระบบจะข้ามการตรวจ signature เพื่อให้ทดสอบง่ายขึ้น เมื่อใช้งานจริงควรตั้งค่านี้ให้ตรงกับ Channel secret ใน LINE Developers Console
+
+## Routes
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/` | หน้าแรก แสดง Webhook URL และลิงก์ |
+| POST | `/webhook` | รับ LINE webhook events |
+| GET | `/logs` | แสดง log เป็นตาราง HTML |
+| GET | `/api/logs` | ส่ง log เป็น JSON |
+| DELETE | `/api/logs` | ล้าง log ทั้งหมด |
+
+## Deploy to Render
+
+1. Push โปรเจกต์นี้ขึ้น GitHub, GitLab หรือ Bitbucket
+2. เข้า Render Dashboard แล้วเลือก **New +** > **Web Service**
+3. เลือก repository ของโปรเจกต์นี้
+4. ตั้งค่า service:
+
+```text
+Runtime: Node
+Build Command: npm install
+Start Command: npm start
+```
+
+5. ตั้ง Environment Variable:
+
+```text
+LINE_CHANNEL_SECRET=your_line_channel_secret
+```
+
+6. Deploy service แล้วจด URL ของ Render เช่น:
+
+```text
+https://your-render-app.onrender.com
+```
+
+Webhook URL ที่ต้องนำไปใช้กับ LINE คือ:
+
+```text
+https://your-render-app.onrender.com/webhook
+```
+
+หน้าเว็บสำหรับดู log:
+
+```text
+https://your-render-app.onrender.com/logs
+```
+
+JSON API:
+
+```text
+https://your-render-app.onrender.com/api/logs
+```
+
+## ตั้งค่า LINE Developers Console
+
+1. เข้า [LINE Developers Console](https://developers.line.biz/console/)
+2. เลือก Provider และ Messaging API Channel ของ LINE OA
+3. ไปที่แท็บ **Messaging API**
+4. เปิด **Use webhook**
+5. ใส่ Webhook URL:
+
+```text
+https://your-render-app.onrender.com/webhook
+```
+
+6. กด **Verify**
+7. เพิ่ม LINE OA เข้ากลุ่มหรือส่งข้อความหา OA เพื่อทดสอบ
+8. เปิดหน้า `/logs` บน Render เพื่อดูข้อมูลที่บันทึก
+
+## Notes
+
+- `logs.json` จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน
+- ถ้า `logs.json` เสียหรืออ่านไม่ได้ ระบบจะถือว่า log ว่างและยังทำงานต่อ
+- บน Render แบบ free filesystem ไม่เหมาะกับการเก็บข้อมูลถาวรระยะยาว เพราะไฟล์อาจหายเมื่อ service restart หรือ redeploy
+- Webhook จะตอบกลับเร็วด้วย HTTP 200 เมื่อรับ payload ได้ แม้ไม่มี event ใน request
+- ถ้าตั้ง `LINE_CHANNEL_SECRET` แล้ว signature ไม่ถูกต้อง ระบบจะตอบ HTTP 401
