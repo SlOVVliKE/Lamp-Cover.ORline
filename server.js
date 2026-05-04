@@ -722,7 +722,7 @@ function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, row
 function buildCreditAddedFlex(amount, snapshot) {
   return {
     type: 'flex',
-    altText: `เพิ่มเครดิตสำเร็จ +${formatPoints(amount)} แต้ม`,
+    altText: `เพิ่มเครดิตสำเร็จ +${formatPoints(amount)}`,
     contents: buildCreditBubble({
       title: '✓ สลิปถูกต้อง',
       titleColor: '#22C55E',
@@ -730,9 +730,9 @@ function buildCreditAddedFlex(amount, snapshot) {
       subtitle: 'ตรวจสอบโดยระบบ',
       amount: formatPoints(amount),
       rows: [
-        flexRow('แต้มที่ได้รับ', `+${formatPoints(amount)} แต้ม`, '#22C55E'),
-        flexRow('แต้มคงเหลือ', `${formatPoints(snapshot.credit.balance)} แต้ม`),
-        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B')
+        flexRow('เครดิตที่ได้รับ', `+${formatPoints(amount)}`, '#22C55E'),
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B')
       ],
       footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
     })
@@ -742,16 +742,16 @@ function buildCreditAddedFlex(amount, snapshot) {
 function buildBalanceFlex(snapshot) {
   return {
     type: 'flex',
-    altText: `ยอดแต้มคงเหลือ ${formatPoints(snapshot.credit.balance)} แต้ม`,
+    altText: `ยอดคงเหลือ ${formatPoints(snapshot.credit.balance)}`,
     contents: buildCreditBubble({
-      title: '💰 ยอดแต้มของคุณ',
+      title: '💰 ยอดเงินของคุณ',
       titleColor: '#3B82F6',
       bodyColor: '#3B82F6',
-      subtitle: 'แต้มคงเหลือ',
+      subtitle: 'ยอดคงเหลือ',
       amount: formatPoints(snapshot.credit.balance),
       rows: [
-        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B'),
-        flexRow('ถอนได้', `${formatPoints(snapshot.withdrawableBalance)} แต้ม`, '#111827'),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B'),
+        flexRow('ถอนได้', formatPoints(snapshot.withdrawableBalance), '#111827'),
         flexRow('จำนวนแผล', `${snapshot.activeWounds.length} รายการ`, '#F59E0B')
       ],
       footer: 'ตรวจสอบโดยระบบ'
@@ -774,7 +774,7 @@ function buildActiveWoundsFlex(snapshot) {
       titleColor: '#F59E0B',
       bodyColor: '#F59E0B',
       subtitle: 'กำลังใช้อยู่',
-      amount: `${formatPoints(snapshot.activeWoundAmount)} แต้ม`,
+      amount: formatPoints(snapshot.activeWoundAmount),
       rows: woundRows.length > 0
         ? [
             flexRow('รวม', `${snapshot.activeWounds.length} รายการ`, '#F59E0B'),
@@ -792,19 +792,19 @@ function buildActiveWoundsFlex(snapshot) {
 function buildWithdrawFlex(snapshot) {
   return {
     type: 'flex',
-    altText: `ถอนยอดเงินได้ ${formatPoints(snapshot.withdrawableBalance)} แต้ม`,
+    altText: `ถอนยอดเงินได้ ${formatPoints(snapshot.withdrawableBalance)}`,
     contents: buildCreditBubble({
       title: '🏧 ถอนยอดเงิน',
       titleColor: '#EF4444',
       bodyColor: '#EF4444',
       subtitle: 'ยอดที่ถอนได้',
-      amount: `${formatPoints(snapshot.withdrawableBalance)} แต้ม`,
+      amount: formatPoints(snapshot.withdrawableBalance),
       rows: [
-        flexRow('แต้มคงเหลือ', `${formatPoints(snapshot.credit.balance)} แต้ม`),
-        flexRow('กำลังใช้', `${formatPoints(snapshot.activeWoundAmount)} แต้ม`, '#F59E0B'),
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B'),
         flexRow('แผลที่ค้าง', `${snapshot.activeWounds.length} รายการ`, '#EF4444')
       ],
-      footer: 'ยอดถอนได้ = ยอดคงเหลือ - แต้มที่กำลังใช้อยู่'
+      footer: 'ยอดถอนได้ = ยอดคงเหลือ - ยอดที่กำลังใช้อยู่'
     })
   };
 }

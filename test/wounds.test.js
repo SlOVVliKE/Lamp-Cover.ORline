@@ -590,8 +590,9 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
   }
 });
 
-test('credit flex cards do not attach quick reply buttons', () => {
+test('credit flex cards do not attach quick reply buttons or point labels', () => {
   const source = fs.readFileSync('server.js', 'utf8');
 
   assert.equal(source.includes('quickReply'), false);
+  assert.equal(source.includes('แต้ม'), false);
 });
