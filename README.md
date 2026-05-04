@@ -116,6 +116,31 @@ https://your-render-app.onrender.com/webhook
 7. เพิ่ม LINE OA เข้ากลุ่มหรือส่งข้อความหา OA เพื่อทดสอบ
 8. เปิดหน้า `/logs` บน Render เพื่อดูข้อมูลที่บันทึก
 
+## Admin Keyword
+
+Send this command to the LINE OA in a private chat:
+
+```text
+I AM ADMIN : group name1
+I AM ADMIN : group name2
+```
+
+The bot stores the sender's `userId` as an admin for that group name in `admins.json`.
+The trailing number is the priority, so `group name1` is priority 1 and `group name2` is priority 2.
+The command is accepted only from a private chat source.
+
+You can change the keyword with this environment variable:
+
+```text
+ADMIN_KEYWORD=I AM ADMIN
+```
+
+Admin registrations can be viewed at:
+
+```text
+https://your-render-app.onrender.com/admins
+```
+
 ## Notes
 
 - `logs.json` จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน
