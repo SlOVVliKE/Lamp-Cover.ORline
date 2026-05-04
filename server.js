@@ -241,6 +241,25 @@ function parseResultCommand(message) {
   return match ? match[1] : null;
 }
 
+function formatClockTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+
+  return date.toLocaleTimeString('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function formatElapsedSeconds(fromTimestamp, toTimestamp) {
+  if (!fromTimestamp || !toTimestamp) return '-';
+  const seconds = Math.max(0, (toTimestamp - fromTimestamp) / 1000);
+  return `${seconds.toFixed(2)} seconds`;
+}
+
 function parsePriceRange(message) {
   const match = String(message || '').match(/(\d+)\s*-\s*(\d+)/);
   if (!match) return null;
@@ -413,6 +432,55 @@ async function replyToLine(replyToken, texts) {
   return response;
 }
 
+async function pushToLine(to, texts) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !to || texts.length === 0) {
+    return null;
+  }
+
+  const response = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+    },
+    body: JSON.stringify({
+      to,
+      messages: texts.slice(0, 5).map((text) => ({
+        type: 'text',
+        text
+      }))
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`LINE push failed: ${response.status} ${errorText}`);
+  }
+
+  return response;
+}
+
+async function getLineGroupMemberProfile(groupId, userId) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !groupId || !userId) {
+    return null;
+  }
+
+  const response = await fetch(
+    `https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json();
+}
+
 function verifyLineSignature(req, res, next) {
   // Skip signature verification when the secret is not set for local testing.
   if (!LINE_CHANNEL_SECRET) {
@@ -513,19 +581,16 @@ function trackGroupMessage(event) {
     return null;
   }
 
-  const openRound = getOpenRoundForGroup(event.source?.groupId);
-  if (!openRound) {
-    return null;
-  }
-
   const source = event.source || {};
+  const openRound = getOpenRoundForGroup(source.groupId);
   const messageText = getMessageText(event);
   const messageEntry = {
     id: event.message.id,
     groupId: source.groupId || '',
-    roundId: openRound.id,
-    roundName: openRound.queueName,
+    roundId: openRound?.id || '',
+    roundName: openRound?.queueName || '',
     userId: source.userId || '',
+    displayName: '',
     text: messageText,
     trade: parseTradeMessage(messageText),
     timestamp: event.timestamp || Date.now(),
@@ -540,6 +605,76 @@ function trackGroupMessage(event) {
 function findTrackedMessage(messageId) {
   if (!messageId) return null;
   return readMessages().find((message) => message.id === messageId) || null;
+}
+
+function updateTrackedMessage(messageId, patch) {
+  if (!messageId) return null;
+
+  let updatedMessage = null;
+  const messages = readMessages().map((message) => {
+    if (message.id !== messageId) return message;
+
+    updatedMessage = {
+      ...message,
+      ...patch
+    };
+
+    return updatedMessage;
+  });
+
+  if (updatedMessage) {
+    writeMessages(messages);
+  }
+
+  return updatedMessage;
+}
+
+function buildUnsendNotification(event, trackedMessage, displayName) {
+  const cancelTimestamp = event.timestamp || Date.now();
+  const senderName = displayName || trackedMessage?.displayName || trackedMessage?.userId || event.source?.userId || '-';
+  const cancelledMessage = trackedMessage?.text || '(ไม่พบข้อความเดิม)';
+  const elapsed = formatElapsedSeconds(trackedMessage?.timestamp, cancelTimestamp);
+  const cancelledAt = formatClockTime(cancelTimestamp);
+
+  return `❌ พบการยกเลิกข้อความ ❌\n\n• ผู้ยกเลิก: ${senderName}\n• ยกเลิกเมื่อ: ${elapsed} ที่แล้ว\n• ข้อความ: ${cancelledMessage}\n• เวลา: ${cancelledAt} ที่ยกเลิก\n\n❌❌❌❌❌❌❌❌`;
+}
+
+async function handleUnsendEvent(event) {
+  if (event.type !== 'unsend' || event.source?.type !== 'group') {
+    return null;
+  }
+
+  const source = event.source || {};
+  const messageId = event.unsend?.messageId || '';
+  const trackedMessage = findTrackedMessage(messageId);
+  let displayName = trackedMessage?.displayName || '';
+
+  if (!displayName && source.groupId && source.userId) {
+    const profile = await getLineGroupMemberProfile(source.groupId, source.userId);
+    displayName = profile?.displayName || '';
+  }
+
+  const updatedMessage = trackedMessage
+    ? updateTrackedMessage(messageId, {
+        displayName,
+        unsent: true,
+        unsentTimestamp: event.timestamp || Date.now(),
+        unsentTime: formatDate(event.timestamp || Date.now())
+      })
+    : null;
+  const notification = buildUnsendNotification(event, updatedMessage || trackedMessage, displayName);
+
+  await pushToLine(source.groupId, [notification]);
+
+  return {
+    type: 'unsend_detected',
+    groupId: source.groupId || '',
+    userId: source.userId || '',
+    displayName: displayName || source.userId || '',
+    messageId,
+    cancelledMessage: trackedMessage?.text || '',
+    notification
+  };
 }
 
 function createWoundFromReply(event) {
@@ -801,12 +936,15 @@ app.post(
       const events = Array.isArray(payload.events) ? payload.events : [];
 
       if (events.length > 0) {
-        const newLogs = events.map((event) => {
+        const newLogs = [];
+
+        for (const event of events) {
           const logEntry = createLogEntry(event);
           const adminEntry = upsertAdminFromEvent(event);
           const queueAction = handleQueueAdminCommand(event);
           const woundEntry = createWoundFromReply(event);
           const trackedMessage = trackGroupMessage(event);
+          const unsendAction = await handleUnsendEvent(event);
 
           if (adminEntry) {
             logEntry.adminRegistered = true;
@@ -838,8 +976,16 @@ app.post(
             logEntry.tradeAmount = trackedMessage.trade.amount;
           }
 
-          return logEntry;
-        });
+          if (unsendAction) {
+            logEntry.unsendDetected = true;
+            logEntry.unsendMessageId = unsendAction.messageId;
+            logEntry.cancelledMessage = unsendAction.cancelledMessage;
+            logEntry.unsendDisplayName = unsendAction.displayName;
+            logEntry.unsendNotification = unsendAction.notification;
+          }
+
+          newLogs.push(logEntry);
+        }
         const logs = readLogs();
         writeLogs([...newLogs, ...logs]);
       }

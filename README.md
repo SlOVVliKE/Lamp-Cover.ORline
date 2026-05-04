@@ -214,6 +214,24 @@ https://your-render-app.onrender.com/rounds
 https://your-render-app.onrender.com/api/rounds
 ```
 
+## Unsend Detection
+
+In group chats, the app detects LINE `unsend` events and pushes a warning back to that group when `LINE_CHANNEL_ACCESS_TOKEN` is set.
+The warning uses the original message stored from webhook message events.
+
+Example warning:
+
+```text
+❌ พบการยกเลิกข้อความ ❌
+
+• ผู้ยกเลิก: display name
+• ยกเลิกเมื่อ: 19.24 seconds ที่แล้ว
+• ข้อความ: ล1500
+• เวลา: 15:17:52 ที่ยกเลิก
+
+❌❌❌❌❌❌❌❌
+```
+
 ## Notes
 
 - `logs.json` จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน

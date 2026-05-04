@@ -342,3 +342,48 @@ test('confirms result twice and records the queue price verdict', async () => {
     await server.stop();
   }
 });
+
+test('detects a group unsend event and builds a group notification', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'G5', userId: 'Ucancel' },
+        message: { type: 'text', id: 'm-cancel-target', text: 'ล1500' },
+        timestamp: 1710000000000
+      },
+      {
+        type: 'unsend',
+        source: { type: 'group', groupId: 'G5', userId: 'Ucancel' },
+        unsend: { messageId: 'm-cancel-target' },
+        timestamp: 1710000019240
+      },
+      {
+        type: 'unsend',
+        source: { type: 'user', userId: 'Ucancel' },
+        unsend: { messageId: 'm-private-target' },
+        timestamp: 1710000020000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const unsendLog = logs.find((log) => log.unsendDetected);
+
+    assert.equal(Boolean(unsendLog), true);
+    assert.equal(unsendLog.groupId, 'G5');
+    assert.equal(unsendLog.unsendMessageId, 'm-cancel-target');
+    assert.equal(unsendLog.cancelledMessage, 'ล1500');
+    assert.equal(unsendLog.unsendNotification.includes('พบการยกเลิกข้อความ'), true);
+    assert.equal(unsendLog.unsendNotification.includes('ล1500'), true);
+    assert.equal(logs.filter((log) => log.unsendDetected).length, 1);
+  } finally {
+    await server.stop();
+  }
+});
