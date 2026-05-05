@@ -223,8 +223,8 @@ test('uses readable bettor names in pair success cards instead of raw LINE user 
     await registerAndBindAdmin(server.baseUrl, 'Gnames');
 
     await postWebhook(server.baseUrl, [
-      creditEvent(openerUserId, 1000, 'm-credit-named-opener', 1710000090000),
-      creditEvent(accepterUserId, 1000, 'm-credit-named-accepter', 1710000090001),
+      creditEvent(openerUserId, 10000, 'm-credit-named-opener', 1710000090000),
+      creditEvent(accepterUserId, 10000, 'm-credit-named-accepter', 1710000090001),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gnames', userId: 'Uadmin' },
@@ -234,7 +234,7 @@ test('uses readable bettor names in pair success cards instead of raw LINE user 
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gnames', userId: openerUserId, displayName: 'AUI' },
-        message: { type: 'text', id: 'm-named-trade', text: 'ชล600' },
+        message: { type: 'text', id: 'm-named-trade', text: 'ชล3600' },
         timestamp: 1710000092000
       },
       {
@@ -261,7 +261,10 @@ test('uses readable bettor names in pair success cards instead of raw LINE user 
 
     assert.match(texts, /AUI/);
     assert.match(texts, /Bank Thirakan/);
+    assert.match(texts, /ราคา 350-380/);
+    assert.match(texts, /3,600\.00/);
     assert.match(texts, /ทีม/);
+    assert.doesNotMatch(texts, /Order #/);
     assert.doesNotMatch(texts, /คุณทาย/);
     assert.doesNotMatch(texts, /คู่ทาย/);
     assert.doesNotMatch(texts, /^คู่$/m);
@@ -414,8 +417,8 @@ test('pushes personal win and loss result cards after confirmed result settlemen
     await registerAndBindAdmin(server.baseUrl, 'Gresult-cards');
 
     await postWebhook(server.baseUrl, [
-      creditEvent('UwinCard', 500, 'm-credit-result-win', 1710000113000),
-      creditEvent('UloseCard', 500, 'm-credit-result-lose', 1710000113001),
+      creditEvent('UwinCard', 5000, 'm-credit-result-win', 1710000113000),
+      creditEvent('UloseCard', 5000, 'm-credit-result-lose', 1710000113001),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gresult-cards', userId: 'Uadmin' },
@@ -425,7 +428,7 @@ test('pushes personal win and loss result cards after confirmed result settlemen
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gresult-cards', userId: 'UwinCard', displayName: 'AIO' },
-        message: { type: 'text', id: 'm-result-card-trade', text: 'ชล100' },
+        message: { type: 'text', id: 'm-result-card-trade', text: 'ชล2000' },
         timestamp: 1710000115000
       },
       {
@@ -463,14 +466,16 @@ test('pushes personal win and loss result cards after confirmed result settlemen
     const loseTexts = collectFlexTexts(loseNotification.messages).join('\n');
 
     assert.match(winTexts, /ผลรอบ "AIO"/);
-    assert.match(winTexts, /\+95\.00/);
-    assert.match(winTexts, /\+100\.00 -5% = \+95\.00/);
+    assert.match(winTexts, /\+1,900\.00/);
+    assert.match(winTexts, /\+2,000\.00 -5% = \+1,900\.00/);
     assert.match(loseTexts, /ผลรอบ "AIO"/);
     assert.match(loseTexts, /ผลออก 900/);
-    assert.match(loseTexts, /#\d+ ❌ แพ้ vs AIO/);
+    assert.match(loseTexts, /❌ แพ้ vs AIO/);
+    assert.doesNotMatch(loseTexts, /#\d+/);
     assert.match(loseTexts, /คุณทาย: ทายแพ้ \| ราคา: 600-800/);
-    assert.match(loseTexts, /-100\.00/);
+    assert.match(loseTexts, /-2,000\.00/);
     assert.match(loseTexts, /แพ้/);
+    assert.match(loseTexts, /3,000\.00/);
     assert.match(loseTexts, /คงเหลือ/);
   } finally {
     await server.stop();

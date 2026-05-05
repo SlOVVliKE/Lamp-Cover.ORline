@@ -718,8 +718,21 @@ function roundPoints(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+const POINT_FORMATTER = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
+
+const INTEGER_FORMATTER = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 0
+});
+
 function formatPoints(value) {
-  return roundPoints(value).toFixed(2);
+  return POINT_FORMATTER.format(roundPoints(value));
+}
+
+function formatIntegerGroupsInText(value) {
+  return String(value || '').replace(/\d+/g, (numberText) => INTEGER_FORMATTER.format(Number(numberText)));
 }
 
 function findCreditByUserId(userId) {
@@ -1182,7 +1195,7 @@ function buildPairSuccessFlex(wound, viewerUserId) {
       title: '✓ จับคู่สำเร็จ',
       titleColor: '#22C55E',
       bodyColor: '#111827',
-      subtitle: `Order #${wound.orderId}`,
+      subtitle: getWoundPriceSubtitle(wound),
       amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
       detailText: wound.openedTime || '',
       rows,
@@ -1265,17 +1278,29 @@ function formatSignedPoints(value) {
   return formatPoints(0);
 }
 
+function getWoundPriceText(wound) {
+  const priceText = wound.priceRawUsed || wound.priceRaw || wound.openingPriceRaw || '';
+  if (priceText) return formatIntegerGroupsInText(priceText);
+  if (wound.noBuilderPrice || wound.fallbackNoBuilder || wound.openingNoBuilderPrice) return 'ช่างไม่ต่อย';
+  return '-';
+}
+
+function getWoundPriceSubtitle(wound) {
+  const priceText = getWoundPriceText(wound);
+  return priceText === '-' ? 'รอราคาช่าง' : `ราคา ${priceText}`;
+}
+
 function buildWoundResultFlex(wound, viewerUserId) {
   const settlement = getViewerSettlement(wound, viewerUserId);
   const credit = findCreditByUserId(viewerUserId);
   const opponentName = getWoundOpponentName(wound, viewerUserId);
   const isOpener = viewerUserId === wound.openerUserId;
   const viewerPrediction = isOpener ? wound.openerPrediction : wound.accepterPrediction;
-  const priceText = wound.priceRawUsed || wound.priceRaw || '-';
+  const priceText = getWoundPriceText(wound);
   const rows = [
     flexRow(`ผลออก ${wound.result || '-'}`, settlement.label, settlement.color),
     flexRow(
-      `#${wound.orderId || '-'} ${settlement.icon} ${settlement.label} vs ${opponentName || '-'}`,
+      `${settlement.icon} ${settlement.label} vs ${opponentName || '-'}`,
       formatSignedPoints(settlement.amount),
       settlement.color
     ),
@@ -1977,9 +2002,11 @@ async function createWoundFromReply(event) {
     amount: tradeMessage.trade.amount,
     requiredCredit,
     priceRaw: tradeMessage.trade.priceRaw || '',
+    openingPriceRaw: openRound.priceRaw || '',
     customPrice: Boolean(tradeMessage.trade.customPrice),
     fallbackNoBuilder: Boolean(tradeMessage.trade.fallbackNoBuilder),
     noBuilderPrice: Boolean(tradeMessage.trade.noBuilderPrice),
+    openingNoBuilderPrice: Boolean(openRound.noBuilderPrice),
     openerAvailableBefore: openerSnapshot.withdrawableBalance,
     accepterAvailableBefore: accepterSnapshot.withdrawableBalance,
     openedTimestamp: nowTimestamp,
