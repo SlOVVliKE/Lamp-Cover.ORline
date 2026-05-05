@@ -1003,7 +1003,26 @@ function flexPostbackButton(label, data, color = '#374151') {
   };
 }
 
-function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, rows, footer, actionButtons = [] }) {
+function buildCreditBubble({
+  title,
+  titleColor,
+  bodyColor,
+  amount,
+  subtitle,
+  detailText = '',
+  rows,
+  footer,
+  actionButtons = []
+}) {
+  const amountContents = [
+    flexText(subtitle, { color: '#9CA3AF', align: 'center', size: 'sm' }),
+    flexText(amount, { color: bodyColor, align: 'center', weight: 'bold', size: '4xl' })
+  ];
+
+  if (detailText) {
+    amountContents.push(flexText(detailText, { color: '#B7B7B7', align: 'center', size: 'sm' }));
+  }
+
   return {
     type: 'bubble',
     size: 'mega',
@@ -1022,8 +1041,7 @@ function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, row
       spacing: 'md',
       paddingAll: '18px',
       contents: [
-        flexText(subtitle, { color: '#9CA3AF', align: 'center', size: 'sm' }),
-        flexText(amount, { color: bodyColor, align: 'center', weight: 'bold', size: '4xl' }),
+        ...amountContents,
         {
           type: 'separator',
           margin: 'lg'
@@ -1142,25 +1160,20 @@ function buildWoundPostbackData(action, woundId, extras = {}) {
 }
 
 function buildPairSuccessFlex(wound, viewerUserId) {
-  const isOpener = viewerUserId === wound.openerUserId;
-  const viewerDisplayName = normalizeDisplayName(isOpener ? wound.openerDisplayName : wound.accepterDisplayName);
-  const opponentDisplayName = normalizeDisplayName(isOpener ? wound.accepterDisplayName : wound.openerDisplayName);
-  const viewerPrediction = isOpener ? wound.openerPrediction : wound.accepterPrediction;
-  const opponentPrediction = isOpener ? wound.accepterPrediction : wound.openerPrediction;
+  const openerName = normalizeDisplayName(wound.openerDisplayName) || 'ผู้เปิด';
+  const accepterName = normalizeDisplayName(wound.accepterDisplayName) || 'ผู้รับ';
+  const openerPrediction = wound.openerPrediction || '-';
+  const accepterPrediction = wound.accepterPrediction || '-';
   const rows = [
-    flexRow('รายการ', wound.roundName || '-'),
-    flexRow('คุณ', viewerDisplayName || (isOpener ? 'ผู้เปิด' : 'ผู้รับ'), '#22C55E'),
-    flexRow('คุณทาย', viewerPrediction || '-', viewerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444')
+    flexRow(openerName, openerPrediction, openerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
+    flexRow(accepterName, accepterPrediction, accepterPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
+    {
+      type: 'separator',
+      margin: 'sm'
+    },
+    flexRow('ทีม', wound.roundName || '-'),
+    flexRow('สถานะ', '✅ ยืนยันแล้ว', '#22C55E')
   ];
-
-  if (opponentDisplayName) {
-    rows.push(flexRow('คู่', opponentDisplayName));
-  }
-
-  rows.push(
-    flexRow('คู่ทาย', opponentPrediction || '-', opponentPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
-    flexRow('สถานะ', 'ยืนยันแล้ว', '#22C55E')
-  );
 
   return {
     type: 'flex',
@@ -1171,6 +1184,7 @@ function buildPairSuccessFlex(wound, viewerUserId) {
       bodyColor: '#111827',
       subtitle: `Order #${wound.orderId}`,
       amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
+      detailText: wound.openedTime || '',
       rows,
       footer: 'รอผลการแข่งขัน 🍀',
       actionButtons:
@@ -1205,6 +1219,7 @@ function getViewerSettlement(wound, viewerUserId) {
       label: 'เสมอ',
       amount: 0,
       color: '#F59E0B',
+      icon: '➖',
       title: `➖ ผลรอบ "${wound.roundName || '-'}"`,
       detail: 'เสมอ คืนยอด'
     };
@@ -1216,6 +1231,7 @@ function getViewerSettlement(wound, viewerUserId) {
       label: 'ชนะ',
       amount: payout,
       color: '#22C55E',
+      icon: '✅',
       title: `🎉 ผลรอบ "${wound.roundName || '-'}"`,
       detail: `+${formatPoints(stakeAmount)} -5% = +${formatPoints(payout)}`
     };
@@ -1226,6 +1242,7 @@ function getViewerSettlement(wound, viewerUserId) {
       label: 'แพ้',
       amount: -stakeAmount,
       color: '#EF4444',
+      icon: '❌',
       title: `😢 ผลรอบ "${wound.roundName || '-'}"`,
       detail: `-${formatPoints(stakeAmount)}`
     };
@@ -1235,6 +1252,7 @@ function getViewerSettlement(wound, viewerUserId) {
     label: '-',
     amount: 0,
     color: '#6B7280',
+    icon: '',
     title: `ผลรอบ "${wound.roundName || '-'}"`,
     detail: '-'
   };
@@ -1251,20 +1269,33 @@ function buildWoundResultFlex(wound, viewerUserId) {
   const settlement = getViewerSettlement(wound, viewerUserId);
   const credit = findCreditByUserId(viewerUserId);
   const opponentName = getWoundOpponentName(wound, viewerUserId);
+  const isOpener = viewerUserId === wound.openerUserId;
+  const viewerPrediction = isOpener ? wound.openerPrediction : wound.accepterPrediction;
+  const priceText = wound.priceRawUsed || wound.priceRaw || '-';
   const rows = [
-    flexRow('ผลออก', wound.result || '-'),
-    flexRow('Order', `#${wound.orderId || '-'}`),
-    flexRow('สถานะ', settlement.label, settlement.color),
-    flexRow('คำนวณ', settlement.detail, settlement.color)
+    flexRow(`ผลออก ${wound.result || '-'}`, settlement.label, settlement.color),
+    flexRow(
+      `#${wound.orderId || '-'} ${settlement.icon} ${settlement.label} vs ${opponentName || '-'}`,
+      formatSignedPoints(settlement.amount),
+      settlement.color
+    ),
+    flexText(`คุณทาย: ${viewerPrediction || '-'} | ราคา: ${priceText}`, {
+      color: '#9CA3AF',
+      size: 'xs',
+      weight: 'bold'
+    })
   ];
 
-  if (opponentName) {
-    rows.splice(2, 0, flexRow('คู่', opponentName));
+  if (settlement.amount > 0) {
+    rows.push(flexText(settlement.detail, { color: settlement.color, size: 'xs', weight: 'bold', align: 'end' }));
   }
 
-  if (wound.priceRawUsed || wound.priceRaw) {
-    rows.push(flexRow('ราคา', wound.priceRawUsed || wound.priceRaw));
-  }
+  rows.push(
+    {
+      type: 'separator',
+      margin: 'md'
+    }
+  );
 
   rows.push(flexRow('คงเหลือ', formatPoints(credit.balance)));
 

@@ -261,6 +261,10 @@ test('uses readable bettor names in pair success cards instead of raw LINE user 
 
     assert.match(texts, /AUI/);
     assert.match(texts, /Bank Thirakan/);
+    assert.match(texts, /ทีม/);
+    assert.doesNotMatch(texts, /คุณทาย/);
+    assert.doesNotMatch(texts, /คู่ทาย/);
+    assert.doesNotMatch(texts, /^คู่$/m);
     assert.doesNotMatch(texts, new RegExp(openerUserId));
     assert.doesNotMatch(texts, new RegExp(accepterUserId));
   } finally {
@@ -462,8 +466,12 @@ test('pushes personal win and loss result cards after confirmed result settlemen
     assert.match(winTexts, /\+95\.00/);
     assert.match(winTexts, /\+100\.00 -5% = \+95\.00/);
     assert.match(loseTexts, /ผลรอบ "AIO"/);
+    assert.match(loseTexts, /ผลออก 900/);
+    assert.match(loseTexts, /#\d+ ❌ แพ้ vs AIO/);
+    assert.match(loseTexts, /คุณทาย: ทายแพ้ \| ราคา: 600-800/);
     assert.match(loseTexts, /-100\.00/);
     assert.match(loseTexts, /แพ้/);
+    assert.match(loseTexts, /คงเหลือ/);
   } finally {
     await server.stop();
   }
