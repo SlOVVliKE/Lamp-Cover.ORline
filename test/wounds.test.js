@@ -246,6 +246,136 @@ test('accepts ช trade keywords with spaced amounts and ignores old ซ keyword
   }
 });
 
+test('accepts signed trade prefixes from 1 to 30 and ถ.ยั่ง keyword only', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gprefix');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UprefixOpener1', 300, 'm-credit-prefix-opener-1', 1710000010000),
+      creditEvent('UprefixAccepter1', 300, 'm-credit-prefix-accepter-1', 1710000010001),
+      creditEvent('UprefixOpener2', 400, 'm-credit-prefix-opener-2', 1710000010002),
+      creditEvent('UprefixAccepter2', 400, 'm-credit-prefix-accepter-2', 1710000010003),
+      creditEvent('UprefixOpener3', 150, 'm-credit-prefix-opener-3', 1710000010004),
+      creditEvent('UprefixAccepter3', 150, 'm-credit-prefix-accepter-3', 1710000010005),
+      creditEvent('UyungOpener', 200, 'm-credit-yung-opener', 1710000010006),
+      creditEvent('UyungAccepter', 200, 'm-credit-yung-accepter', 1710000010007),
+      creditEvent('UoutOpener', 500, 'm-credit-out-opener', 1710000010008),
+      creditEvent('UoutAccepter', 500, 'm-credit-out-accepter', 1710000010009),
+      creditEvent('UoldYungOpener', 100, 'm-credit-old-yung-opener', 1710000010010),
+      creditEvent('UoldYungAccepter', 100, 'm-credit-old-yung-accepter', 1710000010011),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-prefix-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000011000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixOpener1' },
+        message: { type: 'text', id: 'm-prefix-plus10-chy', text: '+10ชย 300' },
+        timestamp: 1710000012000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixAccepter1' },
+        message: { type: 'text', id: 'm-prefix-plus10-chy-accept', quotedMessageId: 'm-prefix-plus10-chy', text: 'ต' },
+        timestamp: 1710000013000
+      },
+      confirmPairEvent('Gprefix', 'UprefixOpener1', 'm-prefix-plus10-chy-accept', 'm-prefix-plus10-chy-confirm', 1710000013500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixOpener2' },
+        message: { type: 'text', id: 'm-prefix-minus30-chol', text: '-30ชล 400' },
+        timestamp: 1710000014000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixAccepter2' },
+        message: { type: 'text', id: 'm-prefix-minus30-chol-accept', quotedMessageId: 'm-prefix-minus30-chol', text: 'ต' },
+        timestamp: 1710000015000
+      },
+      confirmPairEvent('Gprefix', 'UprefixOpener2', 'm-prefix-minus30-chol-accept', 'm-prefix-minus30-chol-confirm', 1710000015500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixOpener3' },
+        message: { type: 'text', id: 'm-prefix-plus1-chot', text: '+1ชถ 150' },
+        timestamp: 1710000016000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UprefixAccepter3' },
+        message: { type: 'text', id: 'm-prefix-plus1-chot-accept', quotedMessageId: 'm-prefix-plus1-chot', text: 'ต' },
+        timestamp: 1710000017000
+      },
+      confirmPairEvent('Gprefix', 'UprefixOpener3', 'm-prefix-plus1-chot-accept', 'm-prefix-plus1-chot-confirm', 1710000017500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UyungOpener' },
+        message: { type: 'text', id: 'm-prefix-yung', text: 'ถ.ยั่ง 200' },
+        timestamp: 1710000018000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UyungAccepter' },
+        message: { type: 'text', id: 'm-prefix-yung-accept', quotedMessageId: 'm-prefix-yung', text: 'ต' },
+        timestamp: 1710000019000
+      },
+      confirmPairEvent('Gprefix', 'UyungOpener', 'm-prefix-yung-accept', 'm-prefix-yung-confirm', 1710000019500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UoutOpener' },
+        message: { type: 'text', id: 'm-prefix-plus31', text: '+31ชล 500' },
+        timestamp: 1710000020000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UoutAccepter' },
+        message: { type: 'text', id: 'm-prefix-plus31-accept', quotedMessageId: 'm-prefix-plus31', text: 'ต' },
+        timestamp: 1710000021000
+      },
+      confirmPairEvent('Gprefix', 'UoutOpener', 'm-prefix-plus31-accept', 'm-prefix-plus31-confirm', 1710000021500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UoldYungOpener' },
+        message: { type: 'text', id: 'm-prefix-old-yung', text: 'ถ.ยัง 100' },
+        timestamp: 1710000022000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gprefix', userId: 'UoldYungAccepter' },
+        message: { type: 'text', id: 'm-prefix-old-yung-accept', quotedMessageId: 'm-prefix-old-yung', text: 'ต' },
+        timestamp: 1710000023000
+      },
+      confirmPairEvent('Gprefix', 'UoldYungOpener', 'm-prefix-old-yung-accept', 'm-prefix-old-yung-confirm', 1710000023500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 4);
+
+    const byMessageId = new Map(wounds.map((wound) => [wound.openMessageId, wound]));
+    assert.equal(byMessageId.get('m-prefix-plus10-chy').openKeyword, '+10ชย');
+    assert.equal(byMessageId.get('m-prefix-plus10-chy').amount, '300');
+    assert.equal(byMessageId.get('m-prefix-minus30-chol').openKeyword, '-30ชล');
+    assert.equal(byMessageId.get('m-prefix-minus30-chol').amount, '400');
+    assert.equal(byMessageId.get('m-prefix-plus1-chot').openKeyword, '+1ชถ');
+    assert.equal(byMessageId.get('m-prefix-plus1-chot').amount, '150');
+    assert.equal(byMessageId.get('m-prefix-yung').openKeyword, 'ถ.ยั่ง');
+    assert.equal(byMessageId.get('m-prefix-yung').amount, '200');
+    assert.equal(byMessageId.has('m-prefix-plus31'), false);
+    assert.equal(byMessageId.has('m-prefix-old-yung'), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('requires duplicate result command before closing active wounds', async () => {
   const server = await startServer();
 

@@ -237,23 +237,39 @@ function parseBindGroupCommand(message) {
 }
 
 const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้า'];
-const TRADE_KEYWORDS = [
-  { keyword: '+5ชล', side: 'chang_dai' },
-  { keyword: '+5ล', side: 'chang_dai' },
-  { keyword: 'ชล', side: 'chang_dai' },
+const BASE_TRADE_KEYWORDS = [
+  { keyword: 'ชล', side: 'chang_dai', adjustable: true },
+  { keyword: 'ล', side: 'chang_dai', adjustable: true },
   { keyword: 'ไล่', side: 'chang_dai' },
-  { keyword: 'ล', side: 'chang_dai' },
-  { keyword: '+5ชย', side: 'chang_yang' },
-  { keyword: '+5ชถ', side: 'chang_yang' },
-  { keyword: '+5ย', side: 'chang_yang' },
-  { keyword: '+5ถ', side: 'chang_yang' },
-  { keyword: 'ถ.ยัง', side: 'chang_yang' },
-  { keyword: 'ชย', side: 'chang_yang' },
-  { keyword: 'ชถ', side: 'chang_yang' },
-  { keyword: 'ถอย', side: 'chang_yang' },
-  { keyword: 'ถ', side: 'chang_yang' },
-  { keyword: 'ย', side: 'chang_yang' }
-].sort((a, b) => b.keyword.length - a.keyword.length);
+  { keyword: 'ชย', side: 'chang_yang', adjustable: true },
+  { keyword: 'ชถ', side: 'chang_yang', adjustable: true },
+  { keyword: 'ย', side: 'chang_yang', adjustable: true },
+  { keyword: 'ถ', side: 'chang_yang', adjustable: true },
+  { keyword: 'ถ.ยั่ง', side: 'chang_yang' },
+  { keyword: 'ถอย', side: 'chang_yang' }
+];
+
+function buildTradeKeywords() {
+  const adjustments = [];
+  for (let number = 1; number <= 30; number += 1) {
+    adjustments.push(`+${number}`, `-${number}`);
+  }
+
+  const keywords = [];
+  for (const item of BASE_TRADE_KEYWORDS) {
+    if (item.adjustable) {
+      for (const adjustment of adjustments) {
+        keywords.push({ keyword: `${adjustment}${item.keyword}`, side: item.side });
+      }
+    }
+
+    keywords.push({ keyword: item.keyword, side: item.side });
+  }
+
+  return keywords.sort((a, b) => b.keyword.length - a.keyword.length);
+}
+
+const TRADE_KEYWORDS = buildTradeKeywords();
 
 function normalizeMessageText(message) {
   return String(message || '').trim().replace(/\s+/g, ' ');
