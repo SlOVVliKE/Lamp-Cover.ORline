@@ -88,6 +88,8 @@ Start Command: npm start
 LINE_CHANNEL_SECRET=your_line_channel_secret
 LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
 LINE_OFFICIAL_ACCOUNT_URL=https://line.me/R/ti/p/your_line_oa_id
+LINE_OFFICIAL_ACCOUNT_NAME=Lamp cover.OR
+LINE_OFFICIAL_ACCOUNT_IMAGE_URL=
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:

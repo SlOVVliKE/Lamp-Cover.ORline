@@ -10,6 +10,8 @@ const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const LINE_OFFICIAL_ACCOUNT_URL = process.env.LINE_OFFICIAL_ACCOUNT_URL || process.env.LINE_OA_URL || '';
+const LINE_OFFICIAL_ACCOUNT_NAME = process.env.LINE_OFFICIAL_ACCOUNT_NAME || 'Lamp cover.OR';
+const LINE_OFFICIAL_ACCOUNT_IMAGE_URL = process.env.LINE_OFFICIAL_ACCOUNT_IMAGE_URL || '';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
@@ -1712,6 +1714,79 @@ function isGroupTextMessage(event) {
   return event.type === 'message' && event.message?.type === 'text' && event.source?.type === 'group';
 }
 
+function buildBehindHouseFlex(link) {
+  const contents = [];
+
+  if (/^https:\/\//i.test(LINE_OFFICIAL_ACCOUNT_IMAGE_URL)) {
+    contents.push({
+      type: 'image',
+      url: LINE_OFFICIAL_ACCOUNT_IMAGE_URL,
+      size: 'sm',
+      aspectRatio: '1:1',
+      aspectMode: 'cover',
+      margin: 'none'
+    });
+  }
+
+  contents.push(
+    flexText(LINE_OFFICIAL_ACCOUNT_NAME, {
+      size: 'xl',
+      weight: 'bold',
+      align: 'center',
+      color: '#111827',
+      margin: contents.length > 0 ? 'lg' : 'none'
+    }),
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#65E875',
+      cornerRadius: 'md',
+      paddingAll: '16px',
+      margin: 'xl',
+      action: {
+        type: 'uri',
+        label: 'ดูโปรไฟล์',
+        uri: link
+      },
+      contents: [
+        flexText('ดูโปรไฟล์', {
+          size: 'lg',
+          weight: 'bold',
+          align: 'center',
+          color: '#111827'
+        })
+      ]
+    }
+  );
+
+  return {
+    type: 'flex',
+    altText: `หลังบ้าน ${LINE_OFFICIAL_ACCOUNT_NAME}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      action: {
+        type: 'uri',
+        label: 'เปิดหลังบ้าน',
+        uri: link
+      },
+      styles: {
+        body: {
+          backgroundColor: '#5FE66F'
+        }
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '28px',
+        spacing: 'md',
+        alignItems: 'center',
+        contents
+      }
+    }
+  };
+}
+
 function handleBehindHouseCommand(event) {
   if (!isGroupTextMessage(event) || !parseBehindHouseCommand(getMessageText(event))) {
     return null;
@@ -1720,13 +1795,15 @@ function handleBehindHouseCommand(event) {
   if (!LINE_OFFICIAL_ACCOUNT_URL) {
     return {
       link: '',
-      replyTexts: []
+      replyTexts: [],
+      replyMessages: []
     };
   }
 
   return {
     link: LINE_OFFICIAL_ACCOUNT_URL,
-    replyTexts: [LINE_OFFICIAL_ACCOUNT_URL]
+    replyTexts: [],
+    replyMessages: [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)]
   };
 }
 
@@ -2546,9 +2623,16 @@ app.post(
             logEntry.behindHouseReplyTexts = Array.isArray(behindHouseAction.replyTexts)
               ? behindHouseAction.replyTexts
               : [];
+            logEntry.behindHouseReplyMessages = Array.isArray(behindHouseAction.replyMessages)
+              ? behindHouseAction.replyMessages
+              : [];
 
             if (Array.isArray(behindHouseAction.replyTexts) && behindHouseAction.replyTexts.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, behindHouseAction.replyTexts));
+            }
+
+            if (Array.isArray(behindHouseAction.replyMessages) && behindHouseAction.replyMessages.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, behindHouseAction.replyMessages));
             }
           }
 

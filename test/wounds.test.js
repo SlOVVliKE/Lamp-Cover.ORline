@@ -1741,7 +1741,7 @@ test('removes an admin registration from a private IAMNOTADMIN command', async (
   }
 });
 
-test('replies with the LINE OA link when a group member asks for หลังบ้าน', async () => {
+test('replies with a LINE OA profile card when a group member asks for หลังบ้าน', async () => {
   const server = await startServer();
 
   try {
@@ -1761,7 +1761,17 @@ test('replies with the LINE OA link when a group member asks for หลังบ
     const linkLog = logs.find((log) => log.behindHouseRequested);
 
     assert.equal(linkLog.behindHouseLink, 'https://line.me/R/ti/p/@lamp-cover');
-    assert.deepEqual(linkLog.behindHouseReplyTexts, ['https://line.me/R/ti/p/@lamp-cover']);
+    assert.deepEqual(linkLog.behindHouseReplyTexts, []);
+
+    const replyMessages = linkLog.behindHouseReplyMessages || [];
+    const texts = collectFlexTexts(replyMessages).join('\n');
+    const actions = collectFlexActions(replyMessages);
+
+    assert.equal(replyMessages[0].type, 'flex');
+    assert.match(replyMessages[0].altText, /หลังบ้าน/);
+    assert.match(texts, /Lamp cover\.OR/);
+    assert.match(texts, /ดูโปรไฟล์/);
+    assert.equal(actions.some((action) => action.type === 'uri' && action.uri === 'https://line.me/R/ti/p/@lamp-cover'), true);
   } finally {
     await server.stop();
   }
