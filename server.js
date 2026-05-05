@@ -732,7 +732,10 @@ function getCreditSnapshot(userId) {
 
 function getRequiredCreditFromTrade(trade) {
   const amount = Number(String(trade?.amount || '').replace(/[^\d.]/g, ''));
-  return Number.isFinite(amount) && amount > 0 ? roundPoints(amount) : 0;
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+
+  const reserveMultiplier = trade?.fallbackNoBuilder ? 2 : 1;
+  return roundPoints(amount * reserveMultiplier);
 }
 
 function flexText(text, options = {}) {

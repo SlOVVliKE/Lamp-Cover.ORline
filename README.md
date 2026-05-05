@@ -242,6 +242,7 @@ Examples:
 Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
 Use `-` for ranges only, for example `300-340ล500`; `/` is not accepted.
 `ชตย` means `ช่างไม่ต่อย` and can be placed after the custom price.
+If a custom price has a stake and `ชตย`, the user must have reserve credit for 2x the stake, for example `330-350ล1000ชตย` requires 2000 available credit.
 
 Pairing flow:
 

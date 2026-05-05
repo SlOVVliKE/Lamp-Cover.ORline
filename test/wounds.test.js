@@ -376,7 +376,7 @@ test('accepts signed trade prefixes from 1 to 30 and ถ.ยั่ง keyword on
   }
 });
 
-test('accepts custom Thai prices and ชตย no-builder marker', async () => {
+test('accepts custom Thai prices and reserves extra credit for ชตย stakes', async () => {
   const server = await startServer();
 
   try {
@@ -470,7 +470,7 @@ test('accepts custom Thai prices and ชตย no-builder marker', async () => {
     assert.equal(byMessageId.get('m-custom-single-thoi').amount, '100');
     assert.equal(byMessageId.get('m-custom-fallback').fallbackNoBuilder, true);
     assert.equal(byMessageId.get('m-custom-fallback').amount, '500');
-    assert.equal(byMessageId.get('m-custom-fallback').requiredCredit, 500);
+    assert.equal(byMessageId.get('m-custom-fallback').requiredCredit, 1000);
     assert.equal(byMessageId.get('m-custom-no-builder').fallbackNoBuilder, true);
     assert.equal(byMessageId.get('m-custom-no-builder').priceRaw, '360-390');
     assert.equal(byMessageId.get('m-custom-no-builder').amount, '');
@@ -480,7 +480,7 @@ test('accepts custom Thai prices and ชตย no-builder marker', async () => {
   }
 });
 
-test('rejects slash custom prices and old a prices', async () => {
+test('rejects slash custom prices, old a prices, and ชตย stakes without reserve credit', async () => {
   const server = await startServer();
 
   try {
@@ -493,6 +493,8 @@ test('rejects slash custom prices and old a prices', async () => {
     await registerAndBindAdmin(server.baseUrl, 'Gcustom-reject');
 
     await postWebhook(server.baseUrl, [
+      creditEvent('UfallbackPoorOpener', 1000, 'm-credit-fallback-poor-opener', 1710000050000),
+      creditEvent('UfallbackPoorAccepter', 1000, 'm-credit-fallback-poor-accepter', 1710000050001),
       creditEvent('UslashOpener', 500, 'm-credit-slash-opener', 1710000050002),
       creditEvent('UslashAccepter', 500, 'm-credit-slash-accepter', 1710000050003),
       creditEvent('UaOpener', 500, 'm-credit-a-opener', 1710000050004),
@@ -503,6 +505,19 @@ test('rejects slash custom prices and old a prices', async () => {
         message: { type: 'text', id: 'm-custom-reject-open-round', text: 'เปิด กอดก้อนเมฆ' },
         timestamp: 1710000051000
       },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UfallbackPoorOpener' },
+        message: { type: 'text', id: 'm-custom-fallback-poor', text: '330-350ล1000ชตย' },
+        timestamp: 1710000052000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UfallbackPoorAccepter' },
+        message: { type: 'text', id: 'm-custom-fallback-poor-accept', quotedMessageId: 'm-custom-fallback-poor', text: 'ต' },
+        timestamp: 1710000053000
+      },
+      confirmPairEvent('Gcustom-reject', 'UfallbackPoorOpener', 'm-custom-fallback-poor-accept', 'm-custom-fallback-poor-confirm', 1710000053500),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UslashOpener' },
@@ -533,6 +548,14 @@ test('rejects slash custom prices and old a prices', async () => {
 
     const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
     assert.equal(wounds.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const rejectedLog = logs.find(
+      (log) => log.openMessageId === 'm-custom-fallback-poor' && log.woundRejectedReason === 'insufficient_credit'
+    );
+    assert.equal(rejectedLog.woundRejectedReason, 'insufficient_credit');
+    assert.equal(rejectedLog.requiredCredit, 2000);
+    assert.deepEqual(rejectedLog.insufficientCreditUsers.sort(), ['UfallbackPoorAccepter', 'UfallbackPoorOpener'].sort());
   } finally {
     await server.stop();
   }
