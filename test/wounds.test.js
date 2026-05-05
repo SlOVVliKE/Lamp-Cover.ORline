@@ -133,6 +133,27 @@ function collectFlexTexts(value, texts = []) {
   return texts;
 }
 
+function collectFlexActions(value, actions = []) {
+  if (!value || typeof value !== 'object') return actions;
+
+  if (value.action && typeof value.action === 'object') {
+    actions.push(value.action);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectFlexActions(item, actions);
+    }
+    return actions;
+  }
+
+  for (const item of Object.values(value)) {
+    collectFlexActions(item, actions);
+  }
+
+  return actions;
+}
+
 test('creates an active wound after the opener confirms an accept reply', async () => {
   const server = await startServer();
 
@@ -242,6 +263,207 @@ test('uses readable bettor names in pair success cards instead of raw LINE user 
     assert.match(texts, /Bank Thirakan/);
     assert.doesNotMatch(texts, new RegExp(openerUserId));
     assert.doesNotMatch(texts, new RegExp(accepterUserId));
+  } finally {
+    await server.stop();
+  }
+});
+
+test('pair success cards include a cancel request button for active wounds', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcancel-button');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UcancelOpen', 500, 'm-credit-cancel-open', 1710000101000),
+      creditEvent('UcancelAccept', 500, 'm-credit-cancel-accept', 1710000101001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-button', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-cancel-button-round-open', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000102000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-button', userId: 'UcancelOpen', displayName: 'AIO' },
+        message: { type: 'text', id: 'm-cancel-button-trade', text: 'ชล500' },
+        timestamp: 1710000103000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-button', userId: 'UcancelAccept', displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-cancel-button-accept', quotedMessageId: 'm-cancel-button-trade', text: 'ต' },
+        timestamp: 1710000104000
+      },
+      confirmPairEvent('Gcancel-button', 'UcancelOpen', 'm-cancel-button-accept', 'm-cancel-button-confirm', 1710000105000)
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const woundLog = logs.find((log) => log.woundCreated);
+    const actions = collectFlexActions(woundLog.woundPrivateNotificationMessages);
+    const cancelAction = actions.find((action) => action.label === 'แตะเพื่อยกเลิก');
+
+    assert.equal(cancelAction.type, 'postback');
+    assert.match(cancelAction.data, /action=wound_cancel_request/);
+    assert.match(cancelAction.data, /woundId=/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('cancel request postback asks the paired opponent to approve or reject', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcancel-flow');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UcancelRequester', 500, 'm-credit-cancel-requester', 1710000106000),
+      creditEvent('UcancelOpponent', 500, 'm-credit-cancel-opponent', 1710000106001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-flow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-cancel-flow-round-open', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000107000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-flow', userId: 'UcancelRequester', displayName: 'AIO' },
+        message: { type: 'text', id: 'm-cancel-flow-trade', text: 'ชล500' },
+        timestamp: 1710000108000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcancel-flow', userId: 'UcancelOpponent', displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-cancel-flow-accept', quotedMessageId: 'm-cancel-flow-trade', text: 'ต' },
+        timestamp: 1710000109000
+      },
+      confirmPairEvent('Gcancel-flow', 'UcancelRequester', 'm-cancel-flow-accept', 'm-cancel-flow-confirm', 1710000110000)
+    ]);
+
+    let wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    const woundId = wounds[0].id;
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'postback',
+        source: { type: 'user', userId: 'UcancelRequester' },
+        replyToken: 'reply-cancel-request',
+        postback: { data: `action=wound_cancel_request&woundId=${encodeURIComponent(woundId)}` },
+        timestamp: 1710000111000
+      }
+    ]);
+
+    let logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const requestLog = logs.find((log) => log.woundCancelAction === 'cancel_requested');
+    const requestTexts = collectFlexTexts(requestLog.woundCancelPrivateMessages).join('\n');
+    const requestActions = collectFlexActions(requestLog.woundCancelPrivateMessages);
+
+    assert.equal(requestLog.woundCancelTargetUserId, 'UcancelOpponent');
+    assert.match(requestTexts, /ขอยกเลิกแผล/);
+    assert.equal(requestActions.some((action) => action.label === 'ยกเลิก'), true);
+    assert.equal(requestActions.some((action) => action.label === 'ไม่ยกเลิก'), true);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'postback',
+        source: { type: 'user', userId: 'UcancelOpponent' },
+        replyToken: 'reply-cancel-approve',
+        postback: { data: `action=wound_cancel_decision&woundId=${encodeURIComponent(woundId)}&decision=approve` },
+        timestamp: 1710000112000
+      }
+    ]);
+
+    wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].status, 'cancelled');
+    assert.equal(wounds[0].cancelApprovedByUserId, 'UcancelOpponent');
+
+    logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.woundCancelAction === 'cancel_approved'), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('pushes personal win and loss result cards after confirmed result settlement', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gresult-cards');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UwinCard', 500, 'm-credit-result-win', 1710000113000),
+      creditEvent('UloseCard', 500, 'm-credit-result-lose', 1710000113001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-card-open', text: 'เปิด AIO 600-800' },
+        timestamp: 1710000114000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'UwinCard', displayName: 'AIO' },
+        message: { type: 'text', id: 'm-result-card-trade', text: 'ชล100' },
+        timestamp: 1710000115000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'UloseCard', displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-result-card-accept', quotedMessageId: 'm-result-card-trade', text: 'ต' },
+        timestamp: 1710000116000
+      },
+      confirmPairEvent('Gresult-cards', 'UwinCard', 'm-result-card-accept', 'm-result-card-confirm', 1710000117000),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-card-close', text: 'ปิด' },
+        timestamp: 1710000118000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-card-result-a', text: 'แจ้งผล 900' },
+        timestamp: 1710000119000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gresult-cards', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-result-card-result-b', text: 'แจ้งผล 900' },
+        timestamp: 1710000120000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const resultLog = logs.find((log) => log.queueAction === 'result_confirmed');
+    const winNotification = resultLog.settlementPrivateNotifications.find((notification) => notification.to === 'UwinCard');
+    const loseNotification = resultLog.settlementPrivateNotifications.find((notification) => notification.to === 'UloseCard');
+    const winTexts = collectFlexTexts(winNotification.messages).join('\n');
+    const loseTexts = collectFlexTexts(loseNotification.messages).join('\n');
+
+    assert.match(winTexts, /ผลรอบ "AIO"/);
+    assert.match(winTexts, /\+95\.00/);
+    assert.match(winTexts, /\+100\.00 -5% = \+95\.00/);
+    assert.match(loseTexts, /ผลรอบ "AIO"/);
+    assert.match(loseTexts, /-100\.00/);
+    assert.match(loseTexts, /แพ้/);
   } finally {
     await server.stop();
   }

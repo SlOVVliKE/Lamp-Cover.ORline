@@ -988,7 +988,22 @@ function flexRow(label, value, valueColor = '#111827') {
   };
 }
 
-function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, rows, footer }) {
+function flexPostbackButton(label, data, color = '#374151') {
+  return {
+    type: 'button',
+    style: 'secondary',
+    color,
+    height: 'sm',
+    action: {
+      type: 'postback',
+      label,
+      data,
+      displayText: label
+    }
+  };
+}
+
+function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, rows, footer, actionButtons = [] }) {
   return {
     type: 'bubble',
     size: 'mega',
@@ -1014,7 +1029,8 @@ function buildCreditBubble({ title, titleColor, bodyColor, amount, subtitle, row
           margin: 'lg'
         },
         ...rows,
-        ...(footer ? [flexText(footer, { color: '#C7C7C7', align: 'center', size: 'xs', margin: 'md' })] : [])
+        ...(footer ? [flexText(footer, { color: '#C7C7C7', align: 'center', size: 'xs', margin: 'md' })] : []),
+        ...actionButtons
       ]
     }
   };
@@ -1115,6 +1131,16 @@ function buildWithdrawFlex(snapshot) {
   };
 }
 
+function buildWoundPostbackData(action, woundId, extras = {}) {
+  const params = new URLSearchParams({
+    action,
+    woundId,
+    ...extras
+  });
+
+  return params.toString();
+}
+
 function buildPairSuccessFlex(wound, viewerUserId) {
   const isOpener = viewerUserId === wound.openerUserId;
   const viewerDisplayName = normalizeDisplayName(isOpener ? wound.openerDisplayName : wound.accepterDisplayName);
@@ -1146,7 +1172,157 @@ function buildPairSuccessFlex(wound, viewerUserId) {
       subtitle: `Order #${wound.orderId}`,
       amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
       rows,
-      footer: 'รอผลการแข่งขัน 🍀'
+      footer: 'รอผลการแข่งขัน 🍀',
+      actionButtons:
+        wound.status === 'active'
+          ? [flexPostbackButton('แตะเพื่อยกเลิก', buildWoundPostbackData('wound_cancel_request', wound.id), '#F472B6')]
+          : []
+    })
+  };
+}
+
+function getWoundParticipantName(wound, userId) {
+  if (userId === wound.openerUserId) return normalizeDisplayName(wound.openerDisplayName) || 'ผู้เปิด';
+  if (userId === wound.accepterUserId) return normalizeDisplayName(wound.accepterDisplayName) || 'ผู้รับ';
+  return '';
+}
+
+function getWoundOpponentUserId(wound, userId) {
+  if (userId === wound.openerUserId) return wound.accepterUserId || '';
+  if (userId === wound.accepterUserId) return wound.openerUserId || '';
+  return '';
+}
+
+function getWoundOpponentName(wound, userId) {
+  return getWoundParticipantName(wound, getWoundOpponentUserId(wound, userId));
+}
+
+function getViewerSettlement(wound, viewerUserId) {
+  const stakeAmount = roundPoints(wound.stakeAmount || getWoundAmount(wound));
+
+  if (wound.settlementStatus === 'draw') {
+    return {
+      label: 'เสมอ',
+      amount: 0,
+      color: '#F59E0B',
+      title: `➖ ผลรอบ "${wound.roundName || '-'}"`,
+      detail: 'เสมอ คืนยอด'
+    };
+  }
+
+  if (wound.winnerUserId === viewerUserId) {
+    const payout = roundPoints(wound.winnerPayoutAmount || stakeAmount * WIN_PAYOUT_RATE);
+    return {
+      label: 'ชนะ',
+      amount: payout,
+      color: '#22C55E',
+      title: `🎉 ผลรอบ "${wound.roundName || '-'}"`,
+      detail: `+${formatPoints(stakeAmount)} -5% = +${formatPoints(payout)}`
+    };
+  }
+
+  if (wound.loserUserId === viewerUserId) {
+    return {
+      label: 'แพ้',
+      amount: -stakeAmount,
+      color: '#EF4444',
+      title: `😢 ผลรอบ "${wound.roundName || '-'}"`,
+      detail: `-${formatPoints(stakeAmount)}`
+    };
+  }
+
+  return {
+    label: '-',
+    amount: 0,
+    color: '#6B7280',
+    title: `ผลรอบ "${wound.roundName || '-'}"`,
+    detail: '-'
+  };
+}
+
+function formatSignedPoints(value) {
+  const amount = roundPoints(value);
+  if (amount > 0) return `+${formatPoints(amount)}`;
+  if (amount < 0) return `-${formatPoints(Math.abs(amount))}`;
+  return formatPoints(0);
+}
+
+function buildWoundResultFlex(wound, viewerUserId) {
+  const settlement = getViewerSettlement(wound, viewerUserId);
+  const credit = findCreditByUserId(viewerUserId);
+  const opponentName = getWoundOpponentName(wound, viewerUserId);
+  const rows = [
+    flexRow('ผลออก', wound.result || '-'),
+    flexRow('Order', `#${wound.orderId || '-'}`),
+    flexRow('สถานะ', settlement.label, settlement.color),
+    flexRow('คำนวณ', settlement.detail, settlement.color)
+  ];
+
+  if (opponentName) {
+    rows.splice(2, 0, flexRow('คู่', opponentName));
+  }
+
+  if (wound.priceRawUsed || wound.priceRaw) {
+    rows.push(flexRow('ราคา', wound.priceRawUsed || wound.priceRaw));
+  }
+
+  rows.push(flexRow('คงเหลือ', formatPoints(credit.balance)));
+
+  return {
+    type: 'flex',
+    altText: `${settlement.title} ${formatSignedPoints(settlement.amount)}`,
+    contents: buildCreditBubble({
+      title: settlement.title,
+      titleColor: settlement.color,
+      bodyColor: settlement.color,
+      subtitle: settlement.amount < 0 ? 'คุณเสียเครดิต' : settlement.amount > 0 ? 'คุณได้รับเครดิต' : 'เสมอ',
+      amount: formatSignedPoints(settlement.amount),
+      rows,
+      footer: ''
+    })
+  };
+}
+
+function buildCancelRequestFlex(wound, requesterUserId) {
+  const requesterName = getWoundParticipantName(wound, requesterUserId);
+  return {
+    type: 'flex',
+    altText: `ขอยกเลิกแผล Order #${wound.orderId}`,
+    contents: buildCreditBubble({
+      title: '⚠️ ขอยกเลิกแผล',
+      titleColor: '#F59E0B',
+      bodyColor: '#F59E0B',
+      subtitle: `Order #${wound.orderId}`,
+      amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
+      rows: [
+        flexRow('รายการ', wound.roundName || '-'),
+        flexRow('ผู้ขอ', requesterName || '-'),
+        flexRow('สถานะ', 'รอคู่ตัดสินใจ', '#F59E0B')
+      ],
+      footer: 'เลือกว่าจะยกเลิกหรือไม่ยกเลิก',
+      actionButtons: [
+        flexPostbackButton('ยกเลิก', buildWoundPostbackData('wound_cancel_decision', wound.id, { decision: 'approve' }), '#EF4444'),
+        flexPostbackButton('ไม่ยกเลิก', buildWoundPostbackData('wound_cancel_decision', wound.id, { decision: 'reject' }), '#374151')
+      ]
+    })
+  };
+}
+
+function buildCancelStatusFlex(wound, title, titleColor, statusText) {
+  return {
+    type: 'flex',
+    altText: `${title} Order #${wound.orderId}`,
+    contents: buildCreditBubble({
+      title,
+      titleColor,
+      bodyColor: titleColor,
+      subtitle: `Order #${wound.orderId}`,
+      amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
+      rows: [
+        flexRow('รายการ', wound.roundName || '-'),
+        flexRow('สถานะ', statusText, titleColor)
+      ],
+      footer: ''
     })
   };
 }
@@ -1801,6 +1977,133 @@ async function createWoundFromReply(event) {
   };
 }
 
+function parsePostbackData(event) {
+  if (event.type !== 'postback' || !event.postback?.data) return null;
+
+  const params = new URLSearchParams(event.postback.data);
+  return {
+    action: params.get('action') || '',
+    woundId: params.get('woundId') || '',
+    decision: params.get('decision') || ''
+  };
+}
+
+function updateWoundEntry(woundId, updater) {
+  let updatedWound = null;
+  const wounds = readWounds().map((wound) => {
+    if (wound.id !== woundId) return wound;
+
+    updatedWound = updater(wound);
+    return updatedWound;
+  });
+
+  if (updatedWound) {
+    writeWounds(wounds);
+  }
+
+  return updatedWound;
+}
+
+async function handleWoundCancelPostback(event) {
+  const postback = parsePostbackData(event);
+  if (!postback?.action || !postback.woundId) return null;
+
+  const source = event.source || {};
+  const userId = source.userId || '';
+  const wound = readWounds().find((entry) => entry.id === postback.woundId);
+  if (!wound || wound.status !== 'active' || ![wound.openerUserId, wound.accepterUserId].includes(userId)) {
+    return null;
+  }
+
+  const nowTimestamp = event.timestamp || Date.now();
+
+  if (postback.action === 'wound_cancel_request') {
+    const targetUserId = getWoundOpponentUserId(wound, userId);
+    if (!targetUserId) return null;
+
+    const updatedWound = updateWoundEntry(wound.id, (entry) => ({
+      ...entry,
+      cancelRequestedByUserId: userId,
+      cancelRequestedTimestamp: nowTimestamp,
+      cancelRequestedTime: formatDate(nowTimestamp),
+      cancelRejectedByUserId: '',
+      cancelRejectedTimestamp: null,
+      cancelRejectedTime: ''
+    }));
+
+    return {
+      type: 'cancel_requested',
+      wound: updatedWound,
+      targetUserId,
+      privateNotifications: [
+        {
+          to: targetUserId,
+          messages: [buildCancelRequestFlex(updatedWound, userId)]
+        }
+      ],
+      replyMessages: [buildCancelStatusFlex(updatedWound, 'ส่งคำขอยกเลิกแล้ว', '#F59E0B', 'รอคู่ตัดสินใจ')]
+    };
+  }
+
+  if (postback.action === 'wound_cancel_decision') {
+    const requesterUserId = wound.cancelRequestedByUserId || '';
+    if (!requesterUserId || requesterUserId === userId || getWoundOpponentUserId(wound, requesterUserId) !== userId) {
+      return null;
+    }
+
+    if (postback.decision === 'approve') {
+      const updatedWound = updateWoundEntry(wound.id, (entry) => ({
+        ...entry,
+        status: 'cancelled',
+        cancelApprovedByUserId: userId,
+        cancelApprovedTimestamp: nowTimestamp,
+        cancelApprovedTime: formatDate(nowTimestamp),
+        cancelledByUserId: userId,
+        cancelledTimestamp: nowTimestamp,
+        cancelledTime: formatDate(nowTimestamp)
+      }));
+
+      return {
+        type: 'cancel_approved',
+        wound: updatedWound,
+        targetUserId: requesterUserId,
+        privateNotifications: [updatedWound.openerUserId, updatedWound.accepterUserId]
+          .filter(Boolean)
+          .map((participantUserId) => ({
+            to: participantUserId,
+            messages: [buildCancelStatusFlex(updatedWound, 'ยกเลิกแผลแล้ว', '#22C55E', 'คู่ยอมรับการยกเลิก')]
+          })),
+        replyMessages: []
+      };
+    }
+
+    if (postback.decision === 'reject') {
+      const updatedWound = updateWoundEntry(wound.id, (entry) => ({
+        ...entry,
+        cancelRequestedByUserId: '',
+        cancelRejectedByUserId: userId,
+        cancelRejectedTimestamp: nowTimestamp,
+        cancelRejectedTime: formatDate(nowTimestamp)
+      }));
+
+      return {
+        type: 'cancel_rejected',
+        wound: updatedWound,
+        targetUserId: requesterUserId,
+        privateNotifications: [
+          {
+            to: requesterUserId,
+            messages: [buildCancelStatusFlex(updatedWound, 'ไม่ยกเลิกแผล', '#EF4444', 'คู่ไม่ยอมรับการยกเลิก')]
+          }
+        ],
+        replyMessages: [buildCancelStatusFlex(updatedWound, 'ไม่ยกเลิกแผล', '#EF4444', 'คุณเลือกไม่ยกเลิก')]
+      };
+    }
+  }
+
+  return null;
+}
+
 function isRegisteredAdmin(userId, groupId) {
   if (!userId || !groupId) return false;
 
@@ -1846,6 +2149,7 @@ function closeWoundsForRound(event, result, round) {
   const nowTimestamp = event.timestamp || Date.now();
   let closedCount = 0;
   const settlements = [];
+  const closedWounds = [];
   const wounds = readWounds().map((wound) => {
     if (wound.status !== 'active' || wound.groupId !== source.groupId || wound.roundId !== round.id) {
       return wound;
@@ -1859,7 +2163,7 @@ function closeWoundsForRound(event, result, round) {
     };
     settlements.push(settlement);
     closedCount += 1;
-    return {
+    const closedWound = {
       ...wound,
       status: 'closed',
       result,
@@ -1869,16 +2173,28 @@ function closeWoundsForRound(event, result, round) {
       closedTimestamp: nowTimestamp,
       closedTime: formatDate(nowTimestamp)
     };
+    closedWounds.push(closedWound);
+    return closedWound;
   });
+  let privateNotifications = [];
 
   if (closedCount > 0) {
     writeWounds(wounds);
     applySettlementCredits(settlements, nowTimestamp);
+    privateNotifications = closedWounds.flatMap((wound) =>
+      [wound.openerUserId, wound.accepterUserId]
+        .filter(Boolean)
+        .map((userId) => ({
+          to: userId,
+          messages: [buildWoundResultFlex(wound, userId)]
+        }))
+    );
   }
 
   return {
     closedCount,
-    settlements
+    settlements,
+    privateNotifications
   };
 }
 
@@ -2053,6 +2369,7 @@ function handleQueueAdminCommand(event) {
     result,
     closedCount,
     settlements: closeResult.settlements,
+    privateNotifications: closeResult.privateNotifications,
     queueFinished,
     queueFinishedReply,
     replyTexts
@@ -2093,6 +2410,7 @@ app.post(
           const behindHouseAction = handleBehindHouseCommand(event);
           const trackedMessage = trackGroupMessage(event);
           const woundAction = await createWoundFromReply(event);
+          const woundCancelAction = await handleWoundCancelPostback(event);
           const unsendAction = await handleUnsendEvent(event);
           const creditAction = handleCreditEvent(event);
 
@@ -2151,6 +2469,14 @@ app.post(
               );
             }
 
+            if (Array.isArray(queueAction.privateNotifications) && queueAction.privateNotifications.length > 0) {
+              logEntry.settlementPrivateNotifications = queueAction.privateNotifications;
+
+              for (const notification of queueAction.privateNotifications) {
+                replyJobs.push(pushToLine(notification.to, notification.messages));
+              }
+            }
+
             if (Array.isArray(queueAction.replyTexts) && queueAction.replyTexts.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, queueAction.replyTexts));
             }
@@ -2183,6 +2509,25 @@ app.post(
 
             for (const notification of woundAction.privateNotifications || []) {
               replyJobs.push(pushToLine(notification.to, notification.messages));
+            }
+          }
+
+          if (woundCancelAction) {
+            logEntry.woundCancelAction = woundCancelAction.type;
+            logEntry.woundId = woundCancelAction.wound?.id || '';
+            logEntry.woundOrderId = woundCancelAction.wound?.orderId || '';
+            logEntry.woundCancelTargetUserId = woundCancelAction.targetUserId || '';
+            logEntry.woundCancelPrivateMessages = (woundCancelAction.privateNotifications || []).map(
+              (notification) => notification.messages
+            );
+            logEntry.woundCancelReplyMessages = woundCancelAction.replyMessages || [];
+
+            for (const notification of woundCancelAction.privateNotifications || []) {
+              replyJobs.push(pushToLine(notification.to, notification.messages));
+            }
+
+            if (Array.isArray(woundCancelAction.replyMessages) && woundCancelAction.replyMessages.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, woundCancelAction.replyMessages));
             }
           }
 

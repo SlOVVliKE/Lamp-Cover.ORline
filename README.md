@@ -287,6 +287,7 @@ A replies to B: ต
 The first reply only marks a pending pair. The wound is created only when the original opener confirms by replying to the accepter's message. Before creating the wound, the bot checks both users' available credit. Active wounds reserve credit, so users can pair multiple times only while their available credit is still enough. If either side has insufficient credit, that pending pair is rejected and the next accepter can still pair with the same opening message.
 
 When a wound is created, the bot sends a private Flex card to both users if `LINE_CHANNEL_ACCESS_TOKEN` is set.
+The card includes `แตะเพื่อยกเลิก`. If one user taps it, the bot sends an approval card to the paired opponent with `ยกเลิก` and `ไม่ยกเลิก` buttons. If the opponent approves, the wound is marked `cancelled` and will not be settled by the queue result.
 
 Settlement rules:
 - `ชล`, `ล`, `ไล่`, and `ช่างไล่` are `ทายชนะ`.
@@ -294,6 +295,7 @@ Settlement rules:
 - `ทายแพ้` means the user predicts the result will be lower than the builder price. It is not the losing status. If that prediction is correct, that user receives the payout.
 - The play rate is 1:1. The payout is 0.95 of the stake, and 5% is kept by the admin/system.
 - If the result is inside the builder price range, the wound is a draw and both sides keep their credit.
+- After the admin confirms the result, the bot pushes private result cards to both users. For example, the loser sees `-100.00`, and the winner sees `+100.00 -5% = +95.00`.
 
 A registered admin confirms the result with a two-step command:
 
