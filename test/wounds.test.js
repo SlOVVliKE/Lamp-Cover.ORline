@@ -376,6 +376,168 @@ test('accepts signed trade prefixes from 1 to 30 and ถ.ยั่ง keyword on
   }
 });
 
+test('accepts custom Thai prices and ชตย no-builder marker', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcustom');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UcustomOpener1', 500, 'm-credit-custom-opener-1', 1710000040000),
+      creditEvent('UcustomAccepter1', 500, 'm-credit-custom-accepter-1', 1710000040001),
+      creditEvent('UcustomOpener2', 100, 'm-credit-custom-opener-2', 1710000040002),
+      creditEvent('UcustomAccepter2', 100, 'm-credit-custom-accepter-2', 1710000040003),
+      creditEvent('UfallbackOpener', 1000, 'm-credit-fallback-opener', 1710000040004),
+      creditEvent('UfallbackAccepter', 1000, 'm-credit-fallback-accepter', 1710000040005),
+      creditEvent('UnoBuilderOpener', 100, 'm-credit-no-builder-opener', 1710000040006),
+      creditEvent('UnoBuilderAccepter', 100, 'm-credit-no-builder-accepter', 1710000040007),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-custom-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000041000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UcustomOpener1' },
+        message: { type: 'text', id: 'm-custom-range-lai', text: '300-340ล500' },
+        timestamp: 1710000042000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UcustomAccepter1' },
+        message: { type: 'text', id: 'm-custom-range-lai-accept', quotedMessageId: 'm-custom-range-lai', text: 'ต' },
+        timestamp: 1710000043000
+      },
+      confirmPairEvent('Gcustom', 'UcustomOpener1', 'm-custom-range-lai-accept', 'm-custom-range-lai-confirm', 1710000043500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UcustomOpener2' },
+        message: { type: 'text', id: 'm-custom-single-thoi', text: '400ถ100' },
+        timestamp: 1710000044000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UcustomAccepter2' },
+        message: { type: 'text', id: 'm-custom-single-thoi-accept', quotedMessageId: 'm-custom-single-thoi', text: 'ต' },
+        timestamp: 1710000045000
+      },
+      confirmPairEvent('Gcustom', 'UcustomOpener2', 'm-custom-single-thoi-accept', 'm-custom-single-thoi-confirm', 1710000045500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UfallbackOpener' },
+        message: { type: 'text', id: 'm-custom-fallback', text: '345-385ล500 ชตย' },
+        timestamp: 1710000046000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UfallbackAccepter' },
+        message: { type: 'text', id: 'm-custom-fallback-accept', quotedMessageId: 'm-custom-fallback', text: 'ต' },
+        timestamp: 1710000047000
+      },
+      confirmPairEvent('Gcustom', 'UfallbackOpener', 'm-custom-fallback-accept', 'm-custom-fallback-confirm', 1710000047500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UnoBuilderOpener' },
+        message: { type: 'text', id: 'm-custom-no-builder', text: '360-390ถ ชตย' },
+        timestamp: 1710000048000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom', userId: 'UnoBuilderAccepter' },
+        message: { type: 'text', id: 'm-custom-no-builder-accept', quotedMessageId: 'm-custom-no-builder', text: 'ต' },
+        timestamp: 1710000049000
+      },
+      confirmPairEvent('Gcustom', 'UnoBuilderOpener', 'm-custom-no-builder-accept', 'm-custom-no-builder-confirm', 1710000049500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 4);
+
+    const byMessageId = new Map(wounds.map((wound) => [wound.openMessageId, wound]));
+    assert.equal(byMessageId.get('m-custom-range-lai').openKeyword, 'ล');
+    assert.equal(byMessageId.get('m-custom-range-lai').priceRaw, '300-340');
+    assert.equal(byMessageId.get('m-custom-range-lai').amount, '500');
+    assert.equal(byMessageId.get('m-custom-range-lai').requiredCredit, 500);
+    assert.equal(byMessageId.get('m-custom-single-thoi').openKeyword, 'ถ');
+    assert.equal(byMessageId.get('m-custom-single-thoi').priceRaw, '400');
+    assert.equal(byMessageId.get('m-custom-single-thoi').amount, '100');
+    assert.equal(byMessageId.get('m-custom-fallback').fallbackNoBuilder, true);
+    assert.equal(byMessageId.get('m-custom-fallback').amount, '500');
+    assert.equal(byMessageId.get('m-custom-fallback').requiredCredit, 500);
+    assert.equal(byMessageId.get('m-custom-no-builder').fallbackNoBuilder, true);
+    assert.equal(byMessageId.get('m-custom-no-builder').priceRaw, '360-390');
+    assert.equal(byMessageId.get('m-custom-no-builder').amount, '');
+    assert.equal(byMessageId.get('m-custom-no-builder').requiredCredit, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('rejects slash custom prices and old a prices', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcustom-reject');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UslashOpener', 500, 'm-credit-slash-opener', 1710000050002),
+      creditEvent('UslashAccepter', 500, 'm-credit-slash-accepter', 1710000050003),
+      creditEvent('UaOpener', 500, 'm-credit-a-opener', 1710000050004),
+      creditEvent('UaAccepter', 500, 'm-credit-a-accepter', 1710000050005),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-custom-reject-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000051000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UslashOpener' },
+        message: { type: 'text', id: 'm-custom-slash', text: '300/340ล500' },
+        timestamp: 1710000054000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UslashAccepter' },
+        message: { type: 'text', id: 'm-custom-slash-accept', quotedMessageId: 'm-custom-slash', text: 'ต' },
+        timestamp: 1710000055000
+      },
+      confirmPairEvent('Gcustom-reject', 'UslashOpener', 'm-custom-slash-accept', 'm-custom-slash-confirm', 1710000055500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UaOpener' },
+        message: { type: 'text', id: 'm-custom-old-a', text: '230-250a200' },
+        timestamp: 1710000056000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcustom-reject', userId: 'UaAccepter' },
+        message: { type: 'text', id: 'm-custom-old-a-accept', quotedMessageId: 'm-custom-old-a', text: 'ต' },
+        timestamp: 1710000057000
+      },
+      confirmPairEvent('Gcustom-reject', 'UaOpener', 'm-custom-old-a-accept', 'm-custom-old-a-confirm', 1710000057500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('requires duplicate result command before closing active wounds', async () => {
   const server = await startServer();
 

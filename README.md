@@ -232,8 +232,16 @@ Examples:
 ถ 650
 +10ชย 300
 -30ชล 400
-230-250a200
+300-340ล500
+300-340ถ500
+400ถ100
+345-385ล500 ชตย
+360-390ถ ชตย
 ```
+
+Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
+Use `-` for ranges only, for example `300-340ล500`; `/` is not accepted.
+`ชตย` means `ช่างไม่ต่อย` and can be placed after the custom price.
 
 Pairing flow:
 

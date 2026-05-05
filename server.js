@@ -249,6 +249,21 @@ const BASE_TRADE_KEYWORDS = [
   { keyword: 'ถอย', side: 'chang_yang' }
 ];
 
+const CUSTOM_PRICE_KEYWORDS = [
+  { keyword: 'ช่างไล่', side: 'chang_dai' },
+  { keyword: 'ช่างยั่ง', side: 'chang_yang' },
+  { keyword: 'ช่างถอย', side: 'chang_yang' },
+  { keyword: 'ไล่', side: 'chang_dai' },
+  { keyword: 'ถอย', side: 'chang_yang' },
+  { keyword: 'ยั่ง', side: 'chang_yang' },
+  { keyword: 'ชล', side: 'chang_dai' },
+  { keyword: 'ชย', side: 'chang_yang' },
+  { keyword: 'ชถ', side: 'chang_yang' },
+  { keyword: 'ล', side: 'chang_dai' },
+  { keyword: 'ย', side: 'chang_yang' },
+  { keyword: 'ถ', side: 'chang_yang' }
+].sort((a, b) => b.keyword.length - a.keyword.length);
+
 function buildTradeKeywords() {
   const adjustments = [];
   for (let number = 1; number <= 30; number += 1) {
@@ -270,6 +285,7 @@ function buildTradeKeywords() {
 }
 
 const TRADE_KEYWORDS = buildTradeKeywords();
+const CUSTOM_PRICE_KEYWORD_PATTERN = CUSTOM_PRICE_KEYWORDS.map((item) => escapeRegExp(item.keyword)).join('|');
 
 function normalizeMessageText(message) {
   return String(message || '').trim().replace(/\s+/g, ' ');
@@ -293,14 +309,23 @@ function parseTradeMessage(message) {
     }
   }
 
-  const compactText = text.replace(/\s+/g, '');
-  const priceMatch = compactText.match(/^\d+(?:-\d+)*[a-z]\d+$/i);
-  if (priceMatch) {
+  const customPriceMatch = text.match(new RegExp(`^(\\d+(?:-\\d+)*?)\\s*(${CUSTOM_PRICE_KEYWORD_PATTERN})\\s*(\\d*)\\s*(ชตย)?$`, 'i'));
+  if (customPriceMatch) {
+    const keyword = customPriceMatch[2];
+    const keywordEntry = CUSTOM_PRICE_KEYWORDS.find((item) => item.keyword === keyword);
+    const amount = customPriceMatch[3] || '';
+    const fallbackNoBuilder = Boolean(customPriceMatch[4]);
+
     return {
-      side: 'custom_price',
-      keyword: 'open_price',
-      amount: '',
-      rawText: text
+      side: keywordEntry?.side || 'custom_price',
+      keyword,
+      amount,
+      rawText: text,
+      priceRaw: customPriceMatch[1],
+      customPrice: true,
+      fallbackNoBuilder,
+      noBuilderPrice: fallbackNoBuilder,
+      requiredCredit: amount ? roundPoints(Number(amount)) : 0
     };
   }
 
@@ -1414,6 +1439,10 @@ function createWoundFromReply(event) {
     side: tradeMessage.trade.side,
     amount: tradeMessage.trade.amount,
     requiredCredit,
+    priceRaw: tradeMessage.trade.priceRaw || '',
+    customPrice: Boolean(tradeMessage.trade.customPrice),
+    fallbackNoBuilder: Boolean(tradeMessage.trade.fallbackNoBuilder),
+    noBuilderPrice: Boolean(tradeMessage.trade.noBuilderPrice),
     openerAvailableBefore: openerSnapshot.withdrawableBalance,
     accepterAvailableBefore: accepterSnapshot.withdrawableBalance,
     openedTimestamp: nowTimestamp,
