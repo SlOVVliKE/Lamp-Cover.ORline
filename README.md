@@ -213,8 +213,8 @@ If the builder price is known after close, send:
 Tracked opening keywords:
 
 ```text
-ชล, ซล, ล, ไล่, +5ซล, +5ล
-ซย, ซถ, ย, ถ.ยัง, ถอย, +5ซย, +5ซถ, +5ย, +5ถ
+ชล, ล, ไล่, +5ชล, +5ล
+ชย, ชถ, ย, ถ, ถ.ยัง, ถอย, +5ชย, +5ชถ, +5ย, +5ถ
 ```
 
 Accepted reply keywords:
@@ -227,8 +227,9 @@ Examples:
 
 ```text
 ชล170
-ซล1000
-ซย500
+ชย 300
+ถ 650
++5ชถ 400
 230-250a200
 ```
 

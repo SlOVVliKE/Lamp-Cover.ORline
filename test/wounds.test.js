@@ -135,7 +135,7 @@ test('creates an active wound after the opener confirms an accept reply', async 
       {
         type: 'message',
         source: { type: 'group', groupId: 'G1', userId: 'Ubuyer' },
-        message: { type: 'text', id: 'm-open-1', text: 'ซล1000' },
+        message: { type: 'text', id: 'm-open-1', text: 'ชล1000' },
         timestamp: 1710000000000
       },
       {
@@ -157,8 +157,90 @@ test('creates an active wound after the opener confirms an accept reply', async 
     assert.equal(wounds[0].openerUserId, 'Ubuyer');
     assert.equal(wounds[0].accepterUserId, 'Useller');
     assert.equal(wounds[0].amount, '1000');
-    assert.equal(wounds[0].openKeyword, 'ซล');
+    assert.equal(wounds[0].openKeyword, 'ชล');
     assert.equal(wounds[0].acceptKeyword, 'ต');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('accepts ช trade keywords with spaced amounts and ignores old ซ keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gspace');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UspaceOpener1', 300, 'm-credit-space-opener-1', 1710000000000),
+      creditEvent('UspaceAccepter1', 300, 'm-credit-space-accepter-1', 1710000000001),
+      creditEvent('UspaceOpener2', 650, 'm-credit-space-opener-2', 1710000000002),
+      creditEvent('UspaceAccepter2', 650, 'm-credit-space-accepter-2', 1710000000003),
+      creditEvent('UlegacyOpener', 300, 'm-credit-legacy-opener', 1710000000004),
+      creditEvent('UlegacyAccepter', 300, 'm-credit-legacy-accepter', 1710000000005),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-space-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UspaceOpener1' },
+        message: { type: 'text', id: 'm-space-chy', text: 'ชย 300' },
+        timestamp: 1710000002000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UspaceAccepter1' },
+        message: { type: 'text', id: 'm-space-chy-accept', quotedMessageId: 'm-space-chy', text: 'ต' },
+        timestamp: 1710000003000
+      },
+      confirmPairEvent('Gspace', 'UspaceOpener1', 'm-space-chy-accept', 'm-space-chy-confirm', 1710000003500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UspaceOpener2' },
+        message: { type: 'text', id: 'm-space-thor', text: 'ถ 650' },
+        timestamp: 1710000004000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UspaceAccepter2' },
+        message: { type: 'text', id: 'm-space-thor-accept', quotedMessageId: 'm-space-thor', text: 'ต' },
+        timestamp: 1710000005000
+      },
+      confirmPairEvent('Gspace', 'UspaceOpener2', 'm-space-thor-accept', 'm-space-thor-confirm', 1710000005500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UlegacyOpener' },
+        message: { type: 'text', id: 'm-space-legacy-so', text: 'ซย300' },
+        timestamp: 1710000006000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gspace', userId: 'UlegacyAccepter' },
+        message: { type: 'text', id: 'm-space-legacy-accept', quotedMessageId: 'm-space-legacy-so', text: 'ต' },
+        timestamp: 1710000007000
+      },
+      confirmPairEvent('Gspace', 'UlegacyOpener', 'm-space-legacy-accept', 'm-space-legacy-confirm', 1710000007500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 2);
+
+    const byMessageId = new Map(wounds.map((wound) => [wound.openMessageId, wound]));
+    assert.equal(byMessageId.get('m-space-chy').openKeyword, 'ชย');
+    assert.equal(byMessageId.get('m-space-chy').amount, '300');
+    assert.equal(byMessageId.get('m-space-chy').side, 'chang_yang');
+    assert.equal(byMessageId.get('m-space-thor').openKeyword, 'ถ');
+    assert.equal(byMessageId.get('m-space-thor').amount, '650');
+    assert.equal(byMessageId.get('m-space-thor').side, 'chang_yang');
+    assert.equal(byMessageId.has('m-space-legacy-so'), false);
   } finally {
     await server.stop();
   }
@@ -188,7 +270,7 @@ test('requires duplicate result command before closing active wounds', async () 
       {
         type: 'message',
         source: { type: 'group', groupId: 'G2', userId: 'Ubuyer' },
-        message: { type: 'text', id: 'm-open-2', text: 'ซย500' },
+        message: { type: 'text', id: 'm-open-2', text: 'ชย500' },
         timestamp: 1710000001000
       },
       {
@@ -258,7 +340,7 @@ test('opens a queue round and ignores new wounds after close', async () => {
       {
         type: 'message',
         source: { type: 'group', groupId: 'G3', userId: 'Ubuyer' },
-        message: { type: 'text', id: 'm-open-trade', text: 'ซล1000' },
+        message: { type: 'text', id: 'm-open-trade', text: 'ชล1000' },
         timestamp: 1710000002000
       },
       {
@@ -278,7 +360,7 @@ test('opens a queue round and ignores new wounds after close', async () => {
       {
         type: 'message',
         source: { type: 'group', groupId: 'G3', userId: 'Ubuyer2' },
-        message: { type: 'text', id: 'm-late-trade', text: 'ซล2000' },
+        message: { type: 'text', id: 'm-late-trade', text: 'ชล2000' },
         timestamp: 1710000005000
       },
       {
@@ -327,7 +409,7 @@ test('confirms result twice and records the queue price verdict', async () => {
       {
         type: 'message',
         source: { type: 'group', groupId: 'G4', userId: 'Ubuyer' },
-        message: { type: 'text', id: 'm-result-trade', text: 'ซล1000' },
+        message: { type: 'text', id: 'm-result-trade', text: 'ชล1000' },
         timestamp: 1710000002000
       },
       {
@@ -581,7 +663,7 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gcredit2', userId: 'Ubuyer' },
-        message: { type: 'text', id: 'm-credit-trade', text: 'ซล100' },
+        message: { type: 'text', id: 'm-credit-trade', text: 'ชล100' },
         timestamp: 1710000002000
       },
       {

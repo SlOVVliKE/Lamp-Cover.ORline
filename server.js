@@ -238,20 +238,20 @@ function parseBindGroupCommand(message) {
 
 const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้า'];
 const TRADE_KEYWORDS = [
-  { keyword: '+5ซล', side: 'chang_dai' },
+  { keyword: '+5ชล', side: 'chang_dai' },
   { keyword: '+5ล', side: 'chang_dai' },
   { keyword: 'ชล', side: 'chang_dai' },
-  { keyword: 'ซล', side: 'chang_dai' },
   { keyword: 'ไล่', side: 'chang_dai' },
   { keyword: 'ล', side: 'chang_dai' },
-  { keyword: '+5ซย', side: 'chang_yang' },
-  { keyword: '+5ซถ', side: 'chang_yang' },
+  { keyword: '+5ชย', side: 'chang_yang' },
+  { keyword: '+5ชถ', side: 'chang_yang' },
   { keyword: '+5ย', side: 'chang_yang' },
   { keyword: '+5ถ', side: 'chang_yang' },
   { keyword: 'ถ.ยัง', side: 'chang_yang' },
-  { keyword: 'ซย', side: 'chang_yang' },
-  { keyword: 'ซถ', side: 'chang_yang' },
+  { keyword: 'ชย', side: 'chang_yang' },
+  { keyword: 'ชถ', side: 'chang_yang' },
   { keyword: 'ถอย', side: 'chang_yang' },
+  { keyword: 'ถ', side: 'chang_yang' },
   { keyword: 'ย', side: 'chang_yang' }
 ].sort((a, b) => b.keyword.length - a.keyword.length);
 
