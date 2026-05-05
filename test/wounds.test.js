@@ -112,6 +112,27 @@ function confirmPairEvent(groupId, openerUserId, acceptMessageId, id, timestamp)
   };
 }
 
+function collectFlexTexts(value, texts = []) {
+  if (!value || typeof value !== 'object') return texts;
+
+  if (typeof value.text === 'string') {
+    texts.push(value.text);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectFlexTexts(item, texts);
+    }
+    return texts;
+  }
+
+  for (const item of Object.values(value)) {
+    collectFlexTexts(item, texts);
+  }
+
+  return texts;
+}
+
 test('creates an active wound after the opener confirms an accept reply', async () => {
   const server = await startServer();
 
@@ -160,6 +181,125 @@ test('creates an active wound after the opener confirms an accept reply', async 
     assert.equal(wounds[0].amount, '1000');
     assert.equal(wounds[0].openKeyword, 'ชล');
     assert.equal(wounds[0].acceptKeyword, 'ต');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('uses readable bettor names in pair success cards instead of raw LINE user IDs', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    const openerUserId = 'U872e7a8e7fbb1c3e3f066d4c858b76f98';
+    const accepterUserId = 'U111111111111111111111111111111111';
+
+    await registerAndBindAdmin(server.baseUrl, 'Gnames');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent(openerUserId, 1000, 'm-credit-named-opener', 1710000090000),
+      creditEvent(accepterUserId, 1000, 'm-credit-named-accepter', 1710000090001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnames', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-named-round-open', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000091000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnames', userId: openerUserId, displayName: 'AUI' },
+        message: { type: 'text', id: 'm-named-trade', text: 'ชล600' },
+        timestamp: 1710000092000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnames', userId: accepterUserId, displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-named-accept', quotedMessageId: 'm-named-trade', text: 'ต' },
+        timestamp: 1710000093000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnames', userId: openerUserId, displayName: 'AUI' },
+        message: { type: 'text', id: 'm-named-confirm', quotedMessageId: 'm-named-accept', text: 'ต' },
+        timestamp: 1710000094000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].openerDisplayName, 'AUI');
+    assert.equal(wounds[0].accepterDisplayName, 'Bank Thirakan');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const woundLog = logs.find((log) => log.woundCreated);
+    const texts = collectFlexTexts(woundLog.woundPrivateNotificationMessages).join('\n');
+
+    assert.match(texts, /AUI/);
+    assert.match(texts, /Bank Thirakan/);
+    assert.doesNotMatch(texts, new RegExp(openerUserId));
+    assert.doesNotMatch(texts, new RegExp(accepterUserId));
+  } finally {
+    await server.stop();
+  }
+});
+
+test('omits unreadable opponent user IDs from active wound cards', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    const openerUserId = 'Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const accepterUserId = 'Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    await registerAndBindAdmin(server.baseUrl, 'Ghidden-opponent');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent(openerUserId, 1000, 'm-credit-hidden-opener', 1710000095000),
+      creditEvent(accepterUserId, 1000, 'm-credit-hidden-accepter', 1710000095001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Ghidden-opponent', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-hidden-round-open', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000096000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Ghidden-opponent', userId: openerUserId },
+        message: { type: 'text', id: 'm-hidden-trade', text: 'ชล600' },
+        timestamp: 1710000097000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Ghidden-opponent', userId: accepterUserId },
+        message: { type: 'text', id: 'm-hidden-accept', quotedMessageId: 'm-hidden-trade', text: 'ต' },
+        timestamp: 1710000098000
+      },
+      confirmPairEvent('Ghidden-opponent', openerUserId, 'm-hidden-accept', 'm-hidden-confirm', 1710000099000),
+      {
+        type: 'message',
+        source: { type: 'user', userId: openerUserId },
+        replyToken: 'reply-hidden-active-wounds',
+        message: { type: 'text', id: 'm-hidden-active-wounds', text: 'แผลที่กำลังติด' },
+        timestamp: 1710000100000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const activeCardLog = logs.find((log) => log.creditAction === 'active_wounds_card');
+    const texts = collectFlexTexts(activeCardLog.creditReplyMessages).join('\n');
+
+    assert.match(texts, /600\.00/);
+    assert.doesNotMatch(texts, new RegExp(openerUserId));
+    assert.doesNotMatch(texts, new RegExp(accepterUserId));
   } finally {
     await server.stop();
   }

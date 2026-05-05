@@ -1062,9 +1062,14 @@ function buildBalanceFlex(snapshot) {
 
 function buildActiveWoundsFlex(snapshot) {
   const woundRows = snapshot.activeWounds.slice(0, 5).map((wound) => {
-    const opponent = wound.openerUserId === snapshot.credit.userId ? wound.accepterUserId : wound.openerUserId;
+    const isOpener = wound.openerUserId === snapshot.credit.userId;
+    const opponentName = normalizeDisplayName(isOpener ? wound.accepterDisplayName : wound.openerDisplayName);
     const label = wound.roundName || wound.groupId || 'รายการ';
-    return flexRow(`#${String(wound.id || '').slice(-6)} ${label}`, `vs ${opponent || '-'} ${formatPoints(getWoundAmount(wound))}`, '#F59E0B');
+    const value = opponentName
+      ? `vs ${opponentName} ${formatPoints(getWoundAmount(wound))}`
+      : formatPoints(getWoundAmount(wound));
+
+    return flexRow(`#${String(wound.id || '').slice(-6)} ${label}`, value, '#F59E0B');
   });
 
   return {
@@ -1112,9 +1117,24 @@ function buildWithdrawFlex(snapshot) {
 
 function buildPairSuccessFlex(wound, viewerUserId) {
   const isOpener = viewerUserId === wound.openerUserId;
-  const opponentUserId = isOpener ? wound.accepterUserId : wound.openerUserId;
+  const viewerDisplayName = normalizeDisplayName(isOpener ? wound.openerDisplayName : wound.accepterDisplayName);
+  const opponentDisplayName = normalizeDisplayName(isOpener ? wound.accepterDisplayName : wound.openerDisplayName);
   const viewerPrediction = isOpener ? wound.openerPrediction : wound.accepterPrediction;
   const opponentPrediction = isOpener ? wound.accepterPrediction : wound.openerPrediction;
+  const rows = [
+    flexRow('รายการ', wound.roundName || '-'),
+    flexRow('คุณ', viewerDisplayName || (isOpener ? 'ผู้เปิด' : 'ผู้รับ'), '#22C55E'),
+    flexRow('คุณทาย', viewerPrediction || '-', viewerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444')
+  ];
+
+  if (opponentDisplayName) {
+    rows.push(flexRow('คู่', opponentDisplayName));
+  }
+
+  rows.push(
+    flexRow('คู่ทาย', opponentPrediction || '-', opponentPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
+    flexRow('สถานะ', 'ยืนยันแล้ว', '#22C55E')
+  );
 
   return {
     type: 'flex',
@@ -1125,14 +1145,7 @@ function buildPairSuccessFlex(wound, viewerUserId) {
       bodyColor: '#111827',
       subtitle: `Order #${wound.orderId}`,
       amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
-      rows: [
-        flexRow('รายการ', wound.roundName || '-'),
-        flexRow('คุณ', isOpener ? 'ผู้เปิด' : 'ผู้รับ', '#22C55E'),
-        flexRow('คุณทาย', viewerPrediction || '-', viewerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
-        flexRow('คู่', opponentUserId || '-'),
-        flexRow('คู่ทาย', opponentPrediction || '-', opponentPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
-        flexRow('สถานะ', 'ยืนยันแล้ว', '#22C55E')
-      ],
+      rows,
       footer: 'รอผลการแข่งขัน 🍀'
     })
   };
@@ -1306,6 +1319,28 @@ function getMessageText(event) {
   }
 
   return event.message.type || '';
+}
+
+function looksLikeLineIdentifier(value) {
+  return /^[UCR][0-9a-f]{20,}$/i.test(String(value || '').trim());
+}
+
+function normalizeDisplayName(value) {
+  const displayName = String(value || '').trim();
+  if (!displayName || looksLikeLineIdentifier(displayName)) return '';
+  return displayName;
+}
+
+function getEventDisplayName(event) {
+  return normalizeDisplayName(event?.source?.displayName || event?.displayName || '');
+}
+
+async function resolveGroupMemberDisplayName(groupId, userId, trackedMessage = null) {
+  const trackedDisplayName = normalizeDisplayName(trackedMessage?.displayName);
+  if (trackedDisplayName) return trackedDisplayName;
+
+  const profile = await getLineGroupMemberProfile(groupId, userId);
+  return normalizeDisplayName(profile?.displayName);
 }
 
 function createLogEntry(event) {
@@ -1485,6 +1520,7 @@ function trackGroupMessage(event) {
           openMessageId: quotedMessage.id,
           openerUserId: quotedMessage.userId,
           accepterUserId: source.userId || '',
+          accepterDisplayName: getEventDisplayName(event),
           roundId: openRound.id,
           groupId: source.groupId || '',
           requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade)
@@ -1496,7 +1532,7 @@ function trackGroupMessage(event) {
     roundId: openRound?.id || '',
     roundName: openRound?.queueName || '',
     userId: source.userId || '',
-    displayName: '',
+    displayName: getEventDisplayName(event),
     text: messageText,
     quotedMessageId,
     acceptKeyword,
@@ -1597,7 +1633,7 @@ async function handleUnsendEvent(event) {
   };
 }
 
-function createWoundFromReply(event) {
+async function createWoundFromReply(event) {
   if (!isGroupTextMessage(event)) return null;
 
   const source = event.source || {};
@@ -1704,6 +1740,10 @@ function createWoundFromReply(event) {
   }
 
   const predictionLabels = getPredictionLabels(tradeMessage.trade.side);
+  const [openerDisplayName, accepterDisplayName] = await Promise.all([
+    resolveGroupMemberDisplayName(source.groupId, tradeMessage.userId, tradeMessage),
+    resolveGroupMemberDisplayName(source.groupId, pairIntent.accepterUserId, quotedMessage)
+  ]);
   const woundEntry = {
     id: `${source.groupId}:${tradeMessage.id}:${event.message.id || nowTimestamp}`,
     orderId: createPairOrderId(nowTimestamp, event.message.id),
@@ -1713,6 +1753,8 @@ function createWoundFromReply(event) {
     roundName: openRound.queueName,
     openerUserId: tradeMessage.userId,
     accepterUserId: pairIntent.accepterUserId,
+    openerDisplayName,
+    accepterDisplayName,
     openMessageId: tradeMessage.id,
     acceptMessageId: quotedMessage.id || '',
     confirmMessageId: event.message.id || '',
@@ -2050,7 +2092,7 @@ app.post(
           const queueAction = handleQueueAdminCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
           const trackedMessage = trackGroupMessage(event);
-          const woundAction = createWoundFromReply(event);
+          const woundAction = await createWoundFromReply(event);
           const unsendAction = await handleUnsendEvent(event);
           const creditAction = handleCreditEvent(event);
 
@@ -2133,6 +2175,11 @@ app.post(
             logEntry.woundOrderId = woundEntry.orderId;
             logEntry.requiredCredit = woundEntry.requiredCredit;
             logEntry.woundNotificationTargets = woundAction.notificationTargets;
+            logEntry.openerDisplayName = woundEntry.openerDisplayName || '';
+            logEntry.accepterDisplayName = woundEntry.accepterDisplayName || '';
+            logEntry.woundPrivateNotificationMessages = (woundAction.privateNotifications || []).map(
+              (notification) => notification.messages
+            );
 
             for (const notification of woundAction.privateNotifications || []) {
               replyJobs.push(pushToLine(notification.to, notification.messages));
@@ -2179,6 +2226,7 @@ app.post(
             logEntry.activeWoundAmount = creditAction.activeWoundAmount;
             logEntry.activeWoundCount = creditAction.activeWoundCount || 0;
             logEntry.withdrawableBalance = creditAction.withdrawableBalance;
+            logEntry.creditReplyMessages = Array.isArray(creditAction.replyMessages) ? creditAction.replyMessages : [];
 
             if (Array.isArray(creditAction.replyMessages) && creditAction.replyMessages.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, creditAction.replyMessages));
