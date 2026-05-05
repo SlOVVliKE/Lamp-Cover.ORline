@@ -256,6 +256,13 @@ The first reply only marks a pending pair. The wound is created only when the or
 
 When a wound is created, the bot sends a private Flex card to both users if `LINE_CHANNEL_ACCESS_TOKEN` is set.
 
+Settlement rules:
+- `ชล`, `ล`, `ไล่`, and `ช่างไล่` are `ทายชนะ`.
+- `ชย`, `ชถ`, `ย`, `ถ`, `ถอย`, `ยั่ง`, `ช่างยั่ง`, and `ช่างถอย` are `ทายแพ้`.
+- `ทายแพ้` means the user predicts the result will be lower than the builder price. It is not the losing status. If that prediction is correct, that user receives the payout.
+- The play rate is 1:1. The payout is 0.95 of the stake, and 5% is kept by the admin/system.
+- If the result is inside the builder price range, the wound is a draw and both sides keep their credit.
+
 A registered admin confirms the result with a two-step command:
 
 ```text

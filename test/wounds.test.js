@@ -779,6 +779,219 @@ test('confirms result twice and records the queue price verdict', async () => {
   }
 });
 
+test('settles a ไล่ prediction as winner with 0.95 payout', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsettle-dai');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('Urunner', 200, 'm-credit-runner', 1710000070000),
+      creditEvent('Ufader', 200, 'm-credit-fader', 1710000070001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-dai-open', text: 'เปิด ส.รุ่งตะวัน 320-360' },
+        timestamp: 1710000071000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Urunner' },
+        message: { type: 'text', id: 'm-settle-dai-trade', text: 'ชล100' },
+        timestamp: 1710000072000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Ufader' },
+        message: { type: 'text', id: 'm-settle-dai-accept', quotedMessageId: 'm-settle-dai-trade', text: 'ต' },
+        timestamp: 1710000073000
+      },
+      confirmPairEvent('Gsettle-dai', 'Urunner', 'm-settle-dai-accept', 'm-settle-dai-confirm', 1710000073500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-dai-close', text: 'ปิด' },
+        timestamp: 1710000074000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-dai-result-1', text: 'แจ้งผล 400' },
+        timestamp: 1710000075000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-dai-result-2', text: 'แจ้งผล 400' },
+        timestamp: 1710000076000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].openerPrediction, 'ทายชนะ');
+    assert.equal(wounds[0].accepterPrediction, 'ทายแพ้');
+    assert.equal(wounds[0].settlementStatus, 'settled');
+    assert.equal(wounds[0].winningSide, 'chang_dai');
+    assert.equal(wounds[0].winnerUserId, 'Urunner');
+    assert.equal(wounds[0].loserUserId, 'Ufader');
+    assert.equal(wounds[0].stakeAmount, 100);
+    assert.equal(wounds[0].winnerPayoutAmount, 95);
+    assert.equal(wounds[0].systemFeeAmount, 5);
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('Urunner').balance, 295);
+    assert.equal(byUserId.get('Ufader').balance, 100);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('settles a ถอย or ยั่ง prediction as winner when the result is below the builder price', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsettle-yang');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('Ufader', 200, 'm-credit-yang-fader', 1710000080000),
+      creditEvent('Urunner', 200, 'm-credit-yang-runner', 1710000080001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-yang-open', text: 'เปิด ส.รุ่งตะวัน 320-360' },
+        timestamp: 1710000081000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Ufader' },
+        message: { type: 'text', id: 'm-settle-yang-trade', text: 'ถ100' },
+        timestamp: 1710000082000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Urunner' },
+        message: { type: 'text', id: 'm-settle-yang-accept', quotedMessageId: 'm-settle-yang-trade', text: 'ต' },
+        timestamp: 1710000083000
+      },
+      confirmPairEvent('Gsettle-yang', 'Ufader', 'm-settle-yang-accept', 'm-settle-yang-confirm', 1710000083500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-yang-close', text: 'ปิด' },
+        timestamp: 1710000084000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-yang-result-1', text: 'แจ้งผล 300' },
+        timestamp: 1710000085000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-yang-result-2', text: 'แจ้งผล 300' },
+        timestamp: 1710000086000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].openerPrediction, 'ทายแพ้');
+    assert.equal(wounds[0].accepterPrediction, 'ทายชนะ');
+    assert.equal(wounds[0].settlementStatus, 'settled');
+    assert.equal(wounds[0].winningSide, 'chang_yang');
+    assert.equal(wounds[0].winnerUserId, 'Ufader');
+    assert.equal(wounds[0].loserUserId, 'Urunner');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('Ufader').balance, 295);
+    assert.equal(byUserId.get('Urunner').balance, 100);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('settles a result inside the builder price as a draw without changing balances', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsettle-draw');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('Urunner', 200, 'm-credit-draw-runner', 1710000090000),
+      creditEvent('Ufader', 200, 'm-credit-draw-fader', 1710000090001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-draw-open', text: 'เปิด ส.รุ่งตะวัน 320-360' },
+        timestamp: 1710000091000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Urunner' },
+        message: { type: 'text', id: 'm-settle-draw-trade', text: 'ชล100' },
+        timestamp: 1710000092000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Ufader' },
+        message: { type: 'text', id: 'm-settle-draw-accept', quotedMessageId: 'm-settle-draw-trade', text: 'ต' },
+        timestamp: 1710000093000
+      },
+      confirmPairEvent('Gsettle-draw', 'Urunner', 'm-settle-draw-accept', 'm-settle-draw-confirm', 1710000093500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-draw-close', text: 'ปิด' },
+        timestamp: 1710000094000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-draw-result-1', text: 'แจ้งผล 340' },
+        timestamp: 1710000095000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-draw', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-draw-result-2', text: 'แจ้งผล 340' },
+        timestamp: 1710000096000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].settlementStatus, 'draw');
+    assert.equal(wounds[0].winnerUserId, '');
+    assert.equal(wounds[0].loserUserId, '');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('Urunner').balance, 200);
+    assert.equal(byUserId.get('Ufader').balance, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('detects a group unsend event and builds a group notification', async () => {
   const server = await startServer();
 

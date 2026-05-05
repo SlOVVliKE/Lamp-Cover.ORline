@@ -26,6 +26,7 @@ const MAX_QUEUE_LISTS = 200;
 const MAX_CREDITS = 5000;
 const MAX_CREDIT_TRANSACTIONS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
+const WIN_PAYOUT_RATE = 0.95;
 
 function ensureJsonFile(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -435,6 +436,24 @@ function parsePriceRange(message) {
   };
 }
 
+function parseSettlementPrice(value) {
+  const text = String(value || '').trim();
+  const range = parsePriceRange(text);
+  if (range) return range;
+
+  const single = text.match(/^(\d+)$/);
+  if (!single) return null;
+
+  const price = Number(single[1]);
+  if (!Number.isFinite(price)) return null;
+
+  return {
+    raw: single[1],
+    low: price,
+    high: price
+  };
+}
+
 function parseOpenCommand(message) {
   const match = normalizeMessageText(message).match(/^เปิด\s+(.+)$/i);
   if (!match) return null;
@@ -744,10 +763,15 @@ function getWoundAmount(wound) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
+function getWoundReservedCredit(wound) {
+  const requiredCredit = Number(wound?.requiredCredit);
+  return Number.isFinite(requiredCredit) && requiredCredit > 0 ? requiredCredit : getWoundAmount(wound);
+}
+
 function getCreditSnapshot(userId) {
   const credit = findCreditByUserId(userId);
   const activeWounds = getUserActiveWounds(userId);
-  const activeWoundAmount = roundPoints(activeWounds.reduce((sum, wound) => sum + getWoundAmount(wound), 0));
+  const activeWoundAmount = roundPoints(activeWounds.reduce((sum, wound) => sum + getWoundReservedCredit(wound), 0));
   const withdrawableBalance = Math.max(0, roundPoints(credit.balance - activeWoundAmount));
 
   return {
@@ -764,6 +788,160 @@ function getRequiredCreditFromTrade(trade) {
 
   const reserveMultiplier = trade?.fallbackNoBuilder ? 2 : 1;
   return roundPoints(amount * reserveMultiplier);
+}
+
+function getPredictionLabels(side) {
+  if (side === 'chang_dai') {
+    return {
+      openerPrediction: 'ทายชนะ',
+      accepterPrediction: 'ทายแพ้'
+    };
+  }
+
+  if (side === 'chang_yang') {
+    return {
+      openerPrediction: 'ทายแพ้',
+      accepterPrediction: 'ทายชนะ'
+    };
+  }
+
+  return {
+    openerPrediction: '',
+    accepterPrediction: ''
+  };
+}
+
+function getSettlementPriceForWound(wound, round) {
+  return parseSettlementPrice(wound?.priceRaw) || getRoundPrice(round);
+}
+
+function getWinningSide(result, price) {
+  if (!isNumericResult(result) || !price) return '';
+
+  const resultNumber = Number(result);
+  if (!Number.isFinite(resultNumber)) return '';
+  if (resultNumber > price.high) return 'chang_dai';
+  if (resultNumber < price.low) return 'chang_yang';
+  return 'draw';
+}
+
+function buildWoundSettlement(wound, result, round) {
+  const price = getSettlementPriceForWound(wound, round);
+  const winningSide = getWinningSide(result, price);
+  const stakeAmount = roundPoints(getWoundAmount(wound));
+  const baseSettlement = {
+    priceRawUsed: price?.raw || '',
+    priceLow: price?.low ?? null,
+    priceHigh: price?.high ?? null,
+    stakeAmount,
+    winningSide,
+    winnerUserId: '',
+    loserUserId: '',
+    winnerPayoutAmount: 0,
+    systemFeeAmount: 0
+  };
+
+  if (!winningSide) {
+    return {
+      ...baseSettlement,
+      settlementStatus: 'unsettled'
+    };
+  }
+
+  if (winningSide === 'draw' || stakeAmount <= 0) {
+    return {
+      ...baseSettlement,
+      settlementStatus: 'draw'
+    };
+  }
+
+  const openerWon = wound.side === winningSide;
+  const winnerUserId = openerWon ? wound.openerUserId : wound.accepterUserId;
+  const loserUserId = openerWon ? wound.accepterUserId : wound.openerUserId;
+  const winnerPayoutAmount = roundPoints(stakeAmount * WIN_PAYOUT_RATE);
+
+  return {
+    ...baseSettlement,
+    settlementStatus: 'settled',
+    winnerUserId,
+    loserUserId,
+    winnerPayoutAmount,
+    systemFeeAmount: roundPoints(stakeAmount - winnerPayoutAmount)
+  };
+}
+
+function getCreditRowFromMap(creditMap, userId) {
+  if (!creditMap.has(userId)) {
+    creditMap.set(userId, {
+      userId,
+      balance: 0,
+      totalAdded: 0,
+      transactions: []
+    });
+  }
+
+  return creditMap.get(userId);
+}
+
+function appendCreditTransaction(credit, transaction) {
+  return {
+    ...credit,
+    balance: transaction.balanceAfter,
+    transactions: [transaction, ...(credit.transactions || [])].slice(0, MAX_CREDIT_TRANSACTIONS),
+    updatedTimestamp: transaction.timestamp,
+    updatedTime: transaction.time
+  };
+}
+
+function applySettlementCredits(settlements, nowTimestamp) {
+  const creditMap = new Map(readCredits().map((credit) => [credit.userId, credit]));
+  let changed = false;
+
+  for (const settlement of settlements) {
+    if (settlement.settlementStatus !== 'settled') continue;
+
+    const time = formatDate(nowTimestamp);
+    const winner = getCreditRowFromMap(creditMap, settlement.winnerUserId);
+    const loser = getCreditRowFromMap(creditMap, settlement.loserUserId);
+    const winnerBalance = roundPoints(winner.balance + settlement.winnerPayoutAmount);
+    const loserBalance = roundPoints(loser.balance - settlement.stakeAmount);
+
+    creditMap.set(settlement.winnerUserId, appendCreditTransaction(winner, {
+      id: `${settlement.woundId}:winner:${nowTimestamp}`,
+      type: 'wound_won',
+      amount: settlement.winnerPayoutAmount,
+      stakeAmount: settlement.stakeAmount,
+      feeAmount: settlement.systemFeeAmount,
+      woundId: settlement.woundId,
+      orderId: settlement.orderId,
+      opponentUserId: settlement.loserUserId,
+      result: settlement.result,
+      balanceAfter: winnerBalance,
+      timestamp: nowTimestamp,
+      time
+    }));
+
+    creditMap.set(settlement.loserUserId, appendCreditTransaction(loser, {
+      id: `${settlement.woundId}:loser:${nowTimestamp}`,
+      type: 'wound_lost',
+      amount: -settlement.stakeAmount,
+      stakeAmount: settlement.stakeAmount,
+      feeAmount: settlement.systemFeeAmount,
+      woundId: settlement.woundId,
+      orderId: settlement.orderId,
+      opponentUserId: settlement.winnerUserId,
+      result: settlement.result,
+      balanceAfter: loserBalance,
+      timestamp: nowTimestamp,
+      time
+    }));
+
+    changed = true;
+  }
+
+  if (changed) {
+    writeCredits([...creditMap.values()]);
+  }
 }
 
 function flexText(text, options = {}) {
@@ -912,6 +1090,8 @@ function buildWithdrawFlex(snapshot) {
 function buildPairSuccessFlex(wound, viewerUserId) {
   const isOpener = viewerUserId === wound.openerUserId;
   const opponentUserId = isOpener ? wound.accepterUserId : wound.openerUserId;
+  const viewerPrediction = isOpener ? wound.openerPrediction : wound.accepterPrediction;
+  const opponentPrediction = isOpener ? wound.accepterPrediction : wound.openerPrediction;
 
   return {
     type: 'flex',
@@ -925,7 +1105,9 @@ function buildPairSuccessFlex(wound, viewerUserId) {
       rows: [
         flexRow('รายการ', wound.roundName || '-'),
         flexRow('คุณ', isOpener ? 'ผู้เปิด' : 'ผู้รับ', '#22C55E'),
+        flexRow('คุณทาย', viewerPrediction || '-', viewerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
         flexRow('คู่', opponentUserId || '-'),
+        flexRow('คู่ทาย', opponentPrediction || '-', opponentPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
         flexRow('สถานะ', 'ยืนยันแล้ว', '#22C55E')
       ],
       footer: 'รอผลการแข่งขัน 🍀'
@@ -1449,6 +1631,7 @@ function createWoundFromReply(event) {
     };
   }
 
+  const predictionLabels = getPredictionLabels(tradeMessage.trade.side);
   const woundEntry = {
     id: `${source.groupId}:${tradeMessage.id}:${event.message.id || nowTimestamp}`,
     orderId: createPairOrderId(nowTimestamp, event.message.id),
@@ -1468,6 +1651,8 @@ function createWoundFromReply(event) {
     acceptKeyword: quotedMessage.acceptKeyword || quotedMessage.text,
     confirmKeyword: acceptKeyword,
     side: tradeMessage.trade.side,
+    openerPrediction: predictionLabels.openerPrediction,
+    accepterPrediction: predictionLabels.accepterPrediction,
     amount: tradeMessage.trade.amount,
     requiredCredit,
     priceRaw: tradeMessage.trade.priceRaw || '',
@@ -1546,16 +1731,25 @@ function closeWoundsForRound(event, result, round) {
   const source = event.source || {};
   const nowTimestamp = event.timestamp || Date.now();
   let closedCount = 0;
+  const settlements = [];
   const wounds = readWounds().map((wound) => {
     if (wound.status !== 'active' || wound.groupId !== source.groupId || wound.roundId !== round.id) {
       return wound;
     }
 
+    const settlement = {
+      woundId: wound.id,
+      orderId: wound.orderId,
+      result,
+      ...buildWoundSettlement(wound, result, round)
+    };
+    settlements.push(settlement);
     closedCount += 1;
     return {
       ...wound,
       status: 'closed',
       result,
+      ...settlement,
       closedByUserId: source.userId || '',
       closedMessageId: event.message.id || '',
       closedTimestamp: nowTimestamp,
@@ -1565,9 +1759,13 @@ function closeWoundsForRound(event, result, round) {
 
   if (closedCount > 0) {
     writeWounds(wounds);
+    applySettlementCredits(settlements, nowTimestamp);
   }
 
-  return closedCount;
+  return {
+    closedCount,
+    settlements
+  };
 }
 
 function handleQueueAdminCommand(event) {
@@ -1713,7 +1911,8 @@ function handleQueueAdminCommand(event) {
     resultTime: formatDate(nowTimestamp),
     pendingResult: null
   };
-  const closedCount = closeWoundsForRound(event, result, resultedRound);
+  const closeResult = closeWoundsForRound(event, result, resultedRound);
+  const closedCount = closeResult.closedCount;
 
   upsertRound(resultedRound);
   const queueFinished = !wasQueueFinishedBefore && isQueueListFinished(source.groupId);
@@ -1728,6 +1927,7 @@ function handleQueueAdminCommand(event) {
     round: resultedRound,
     result,
     closedCount,
+    settlements: closeResult.settlements,
     queueFinished,
     queueFinishedReply,
     replyTexts
@@ -1799,6 +1999,18 @@ app.post(
 
             if (typeof queueAction.closedCount === 'number') {
               logEntry.woundsClosed = queueAction.closedCount;
+            }
+
+            if (Array.isArray(queueAction.settlements)) {
+              logEntry.woundSettlementCount = queueAction.settlements.filter(
+                (settlement) => settlement.settlementStatus === 'settled'
+              ).length;
+              logEntry.woundDrawCount = queueAction.settlements.filter(
+                (settlement) => settlement.settlementStatus === 'draw'
+              ).length;
+              logEntry.systemFeeAmount = roundPoints(
+                queueAction.settlements.reduce((sum, settlement) => sum + (Number(settlement.systemFeeAmount) || 0), 0)
+              );
             }
 
             if (Array.isArray(queueAction.replyTexts) && queueAction.replyTexts.length > 0) {
