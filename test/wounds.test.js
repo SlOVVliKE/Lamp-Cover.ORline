@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
-const SERVER_READY_TIMEOUT_MS = 8000;
+const SERVER_READY_TIMEOUT_MS = 15000;
+let nextPort = 3300 + Math.floor(Math.random() * 500);
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,7 +28,7 @@ async function waitForServer(baseUrl) {
 }
 
 async function startServer() {
-  const port = 3300 + Math.floor(Math.random() * 1000);
+  const port = nextPort++;
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server.js'], {
     cwd: process.cwd(),
@@ -92,7 +93,25 @@ async function registerAndBindAdmin(baseUrl, groupId, userId = 'Uadmin', groupNa
   ]);
 }
 
-test('creates an active wound when a group user replies with an accept keyword', async () => {
+function creditEvent(userId, amount, id, timestamp) {
+  return {
+    type: 'message',
+    source: { type: 'user', userId },
+    message: { type: 'text', id, text: `C+${amount}` },
+    timestamp
+  };
+}
+
+function confirmPairEvent(groupId, openerUserId, acceptMessageId, id, timestamp) {
+  return {
+    type: 'message',
+    source: { type: 'group', groupId, userId: openerUserId },
+    message: { type: 'text', id, quotedMessageId: acceptMessageId, text: 'ต' },
+    timestamp
+  };
+}
+
+test('creates an active wound after the opener confirms an accept reply', async () => {
   const server = await startServer();
 
   try {
@@ -100,10 +119,13 @@ test('creates an active wound when a group user replies with an accept keyword',
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
 
     await registerAndBindAdmin(server.baseUrl, 'G1');
 
     await postWebhook(server.baseUrl, [
+      creditEvent('Ubuyer', 5000, 'm-credit-buyer-1', 1710000000000),
+      creditEvent('Useller', 5000, 'm-credit-seller-1', 1710000000000),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G1', userId: 'Uadmin' },
@@ -121,7 +143,8 @@ test('creates an active wound when a group user replies with an accept keyword',
         source: { type: 'group', groupId: 'G1', userId: 'Useller' },
         message: { type: 'text', id: 'm-accept-1', quotedMessageId: 'm-open-1', text: 'ต' },
         timestamp: 1710000001000
-      }
+      },
+      confirmPairEvent('G1', 'Ubuyer', 'm-accept-1', 'm-confirm-1', 1710000002000)
     ]);
 
     const response = await fetch(`${server.baseUrl}/api/wounds`);
@@ -149,10 +172,13 @@ test('requires duplicate result command before closing active wounds', async () 
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
 
     await registerAndBindAdmin(server.baseUrl, 'G2');
 
     await postWebhook(server.baseUrl, [
+      creditEvent('Ubuyer', 5000, 'm-credit-buyer-2', 1710000000000),
+      creditEvent('Useller', 5000, 'm-credit-seller-2', 1710000000000),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
@@ -171,6 +197,7 @@ test('requires duplicate result command before closing active wounds', async () 
         message: { type: 'text', id: 'm-accept-2', quotedMessageId: 'm-open-2', text: 'เค' },
         timestamp: 1710000002000
       },
+      confirmPairEvent('G2', 'Ubuyer', 'm-accept-2', 'm-confirm-2', 1710000002300),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G2', userId: 'Uadmin' },
@@ -212,10 +239,15 @@ test('opens a queue round and ignores new wounds after close', async () => {
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
 
     await registerAndBindAdmin(server.baseUrl, 'G3');
 
     await postWebhook(server.baseUrl, [
+      creditEvent('Ubuyer', 5000, 'm-credit-buyer-3', 1710000000000),
+      creditEvent('Useller', 5000, 'm-credit-seller-3', 1710000000000),
+      creditEvent('Ubuyer2', 5000, 'm-credit-buyer-late-3', 1710000000000),
+      creditEvent('Useller2', 5000, 'm-credit-seller-late-3', 1710000000000),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G3', userId: 'Uadmin' },
@@ -235,6 +267,7 @@ test('opens a queue round and ignores new wounds after close', async () => {
         message: { type: 'text', id: 'm-open-accept', quotedMessageId: 'm-open-trade', text: 'ต' },
         timestamp: 1710000003000
       },
+      confirmPairEvent('G3', 'Ubuyer', 'm-open-accept', 'm-open-confirm', 1710000003500),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G3', userId: 'Uadmin' },
@@ -278,10 +311,13 @@ test('confirms result twice and records the queue price verdict', async () => {
     await clearJson(server.baseUrl, '/api/admins');
     await clearJson(server.baseUrl, '/api/wounds');
     await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
 
     await registerAndBindAdmin(server.baseUrl, 'G4');
 
     await postWebhook(server.baseUrl, [
+      creditEvent('Ubuyer', 5000, 'm-credit-buyer-4', 1710000000000),
+      creditEvent('Useller', 5000, 'm-credit-seller-4', 1710000000000),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
@@ -300,6 +336,7 @@ test('confirms result twice and records the queue price verdict', async () => {
         message: { type: 'text', id: 'm-result-accept', quotedMessageId: 'm-result-trade', text: 'เค' },
         timestamp: 1710000003000
       },
+      confirmPairEvent('G4', 'Ubuyer', 'm-result-accept', 'm-result-confirm-pair', 1710000003500),
       {
         type: 'message',
         source: { type: 'group', groupId: 'G4', userId: 'Uadmin' },
@@ -534,6 +571,7 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
         message: { type: 'text', id: 'm-credit-add-buyer', text: 'C+120' },
         timestamp: 1710000000000
       },
+      creditEvent('Useller', 100, 'm-credit-add-seller', 1710000000500),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gcredit2', userId: 'Uadmin' },
@@ -552,6 +590,7 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
         message: { type: 'text', id: 'm-credit-accept', quotedMessageId: 'm-credit-trade', text: 'ต' },
         timestamp: 1710000003000
       },
+      confirmPairEvent('Gcredit2', 'Ubuyer', 'm-credit-accept', 'm-credit-confirm-pair', 1710000003500),
       {
         type: 'message',
         source: { type: 'user', userId: 'Ubuyer' },
@@ -672,6 +711,194 @@ test('blocks a new queue round until the previous round result is confirmed', as
     logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     assert.equal(logs.some((log) => log.queueAction === 'result_confirmation_requested' && log.result === 'จาวทุกแผล'), true);
     assert.equal(logs.some((log) => log.queueAction === 'result_confirmed' && log.result === 'จาวทุกแผล'), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('requires available credit before creating a wound and lets the next accepter pair', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcredit-gate');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UopenerCredit' },
+        message: { type: 'text', id: 'm-credit-opener-170', text: 'C+170' },
+        timestamp: 1710000020000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UpoorAccepter' },
+        message: { type: 'text', id: 'm-credit-poor-100', text: 'C+100' },
+        timestamp: 1710000020001
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UrichAccepter' },
+        message: { type: 'text', id: 'm-credit-rich-200', text: 'C+200' },
+        timestamp: 1710000020002
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-gate', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-credit-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000021000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-gate', userId: 'UopenerCredit' },
+        message: { type: 'text', id: 'm-credit-trade-170', text: 'ชล170' },
+        timestamp: 1710000022000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-gate', userId: 'UpoorAccepter' },
+        message: { type: 'text', id: 'm-credit-poor-accept', quotedMessageId: 'm-credit-trade-170', text: 'ต' },
+        timestamp: 1710000023000
+      },
+      confirmPairEvent('Gcredit-gate', 'UopenerCredit', 'm-credit-poor-accept', 'm-credit-poor-confirm', 1710000023500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-gate', userId: 'UrichAccepter' },
+        message: { type: 'text', id: 'm-credit-rich-accept', quotedMessageId: 'm-credit-trade-170', text: 'ต' },
+        timestamp: 1710000024000
+      },
+      confirmPairEvent('Gcredit-gate', 'UopenerCredit', 'm-credit-rich-accept', 'm-credit-rich-confirm', 1710000024500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].openerUserId, 'UopenerCredit');
+    assert.equal(wounds[0].accepterUserId, 'UrichAccepter');
+    assert.equal(wounds[0].amount, '170');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const rejectedLog = logs.find((log) => log.woundRejectedReason === 'insufficient_credit');
+    assert.equal(rejectedLog.accepterUserId, 'UpoorAccepter');
+    assert.equal(rejectedLog.requiredCredit, 170);
+    assert.deepEqual(rejectedLog.insufficientCreditUsers, ['UpoorAccepter']);
+
+    const createdLog = logs.find((log) => log.woundCreated);
+    assert.equal(createdLog.woundNotificationTargets.length, 2);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('reserves active wound credit across multiple pairs and blocks duplicate accepts', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gcredit-reserve');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UmultiOpener' },
+        message: { type: 'text', id: 'm-credit-multi-opener', text: 'C+370' },
+        timestamp: 1710000030000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UacceptOne' },
+        message: { type: 'text', id: 'm-credit-accept-one', text: 'C+200' },
+        timestamp: 1710000030001
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UacceptTwo' },
+        message: { type: 'text', id: 'm-credit-accept-two', text: 'C+250' },
+        timestamp: 1710000030002
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UacceptThree' },
+        message: { type: 'text', id: 'm-credit-accept-three', text: 'C+250' },
+        timestamp: 1710000030003
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-credit-reserve-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000031000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UmultiOpener' },
+        message: { type: 'text', id: 'm-credit-reserve-trade-170', text: 'ชล170' },
+        timestamp: 1710000032000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UacceptOne' },
+        message: { type: 'text', id: 'm-credit-reserve-accept-one', quotedMessageId: 'm-credit-reserve-trade-170', text: 'ต' },
+        timestamp: 1710000033000
+      },
+      confirmPairEvent('Gcredit-reserve', 'UmultiOpener', 'm-credit-reserve-accept-one', 'm-credit-reserve-confirm-one', 1710000033500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UacceptTwo' },
+        message: { type: 'text', id: 'm-credit-reserve-duplicate-accept', quotedMessageId: 'm-credit-reserve-trade-170', text: 'ต' },
+        timestamp: 1710000034000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UmultiOpener' },
+        message: { type: 'text', id: 'm-credit-reserve-trade-200', text: 'ชล200' },
+        timestamp: 1710000035000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UacceptTwo' },
+        message: { type: 'text', id: 'm-credit-reserve-accept-two', quotedMessageId: 'm-credit-reserve-trade-200', text: 'ต' },
+        timestamp: 1710000036000
+      },
+      confirmPairEvent('Gcredit-reserve', 'UmultiOpener', 'm-credit-reserve-accept-two', 'm-credit-reserve-confirm-two', 1710000036500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UmultiOpener' },
+        message: { type: 'text', id: 'm-credit-reserve-trade-1', text: 'ชล1' },
+        timestamp: 1710000037000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'UacceptThree' },
+        message: { type: 'text', id: 'm-credit-reserve-accept-three', quotedMessageId: 'm-credit-reserve-trade-1', text: 'ต' },
+        timestamp: 1710000038000
+      },
+      confirmPairEvent('Gcredit-reserve', 'UmultiOpener', 'm-credit-reserve-accept-three', 'm-credit-reserve-confirm-three', 1710000038500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 2);
+    assert.deepEqual(
+      wounds.map((wound) => [wound.openMessageId, wound.accepterUserId, wound.amount]).sort(),
+      [
+        ['m-credit-reserve-trade-170', 'UacceptOne', '170'],
+        ['m-credit-reserve-trade-200', 'UacceptTwo', '200']
+      ]
+    );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.woundRejectedReason === 'already_paired'), true);
+    const insufficientLog = logs.find((log) => log.woundRejectedReason === 'insufficient_credit');
+    assert.deepEqual(insufficientLog.insufficientCreditUsers, ['UmultiOpener']);
+    assert.equal(insufficientLog.requiredCredit, 1);
   } finally {
     await server.stop();
   }

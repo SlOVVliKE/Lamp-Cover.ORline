@@ -213,7 +213,7 @@ If the builder price is known after close, send:
 Tracked opening keywords:
 
 ```text
-ซล, ล, ไล่, +5ซล, +5ล
+ชล, ซล, ล, ไล่, +5ซล, +5ล
 ซย, ซถ, ย, ถ.ยัง, ถอย, +5ซย, +5ซถ, +5ย, +5ถ
 ```
 
@@ -226,10 +226,23 @@ Accepted reply keywords:
 Examples:
 
 ```text
+ชล170
 ซล1000
 ซย500
 230-250a200
 ```
+
+Pairing flow:
+
+```text
+A: ชล170
+B replies to A: ต
+A replies to B: ต
+```
+
+The first reply only marks a pending pair. The wound is created only when the original opener confirms by replying to the accepter's message. Before creating the wound, the bot checks both users' available credit. Active wounds reserve credit, so users can pair multiple times only while their available credit is still enough. If either side has insufficient credit, that pending pair is rejected and the next accepter can still pair with the same opening message.
+
+When a wound is created, the bot sends a private Flex card to both users if `LINE_CHANNEL_ACCESS_TOKEN` is set.
 
 A registered admin confirms the result with a two-step command:
 

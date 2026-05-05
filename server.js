@@ -240,6 +240,7 @@ const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้�
 const TRADE_KEYWORDS = [
   { keyword: '+5ซล', side: 'chang_dai' },
   { keyword: '+5ล', side: 'chang_dai' },
+  { keyword: 'ชล', side: 'chang_dai' },
   { keyword: 'ซล', side: 'chang_dai' },
   { keyword: 'ไล่', side: 'chang_dai' },
   { keyword: 'ล', side: 'chang_dai' },
@@ -688,6 +689,11 @@ function getCreditSnapshot(userId) {
   };
 }
 
+function getRequiredCreditFromTrade(trade) {
+  const amount = Number(String(trade?.amount || '').replace(/[^\d.]/g, ''));
+  return Number.isFinite(amount) && amount > 0 ? roundPoints(amount) : 0;
+}
+
 function flexText(text, options = {}) {
   return {
     type: 'text',
@@ -827,6 +833,30 @@ function buildWithdrawFlex(snapshot) {
         flexRow('แผลที่ค้าง', `${snapshot.activeWounds.length} รายการ`, '#EF4444')
       ],
       footer: 'ยอดถอนได้ = ยอดคงเหลือ - ยอดที่กำลังใช้อยู่'
+    })
+  };
+}
+
+function buildPairSuccessFlex(wound, viewerUserId) {
+  const isOpener = viewerUserId === wound.openerUserId;
+  const opponentUserId = isOpener ? wound.accepterUserId : wound.openerUserId;
+
+  return {
+    type: 'flex',
+    altText: `จับคู่สำเร็จ ${formatPoints(wound.requiredCredit || getWoundAmount(wound))}`,
+    contents: buildCreditBubble({
+      title: '✓ จับคู่สำเร็จ',
+      titleColor: '#22C55E',
+      bodyColor: '#111827',
+      subtitle: `Order #${wound.orderId}`,
+      amount: formatPoints(wound.requiredCredit || getWoundAmount(wound)),
+      rows: [
+        flexRow('รายการ', wound.roundName || '-'),
+        flexRow('คุณ', isOpener ? 'ผู้เปิด' : 'ผู้รับ', '#22C55E'),
+        flexRow('คู่', opponentUserId || '-'),
+        flexRow('สถานะ', 'ยืนยันแล้ว', '#22C55E')
+      ],
+      footer: 'รอผลการแข่งขัน 🍀'
     })
   };
 }
@@ -1115,6 +1145,25 @@ function trackGroupMessage(event) {
   const source = event.source || {};
   const openRound = getOpenRoundForGroup(source.groupId);
   const messageText = getMessageText(event);
+  const quotedMessageId = event.message.quotedMessageId || '';
+  const quotedMessage = findTrackedMessage(quotedMessageId);
+  const acceptKeyword = parseAcceptMessage(messageText);
+  const pairIntent =
+    acceptKeyword &&
+    quotedMessage?.trade &&
+    quotedMessage.groupId === source.groupId &&
+    quotedMessage.roundId === openRound?.id &&
+    quotedMessage.userId &&
+    quotedMessage.userId !== source.userId
+      ? {
+          openMessageId: quotedMessage.id,
+          openerUserId: quotedMessage.userId,
+          accepterUserId: source.userId || '',
+          roundId: openRound.id,
+          groupId: source.groupId || '',
+          requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade)
+        }
+      : null;
   const messageEntry = {
     id: event.message.id,
     groupId: source.groupId || '',
@@ -1123,6 +1172,9 @@ function trackGroupMessage(event) {
     userId: source.userId || '',
     displayName: '',
     text: messageText,
+    quotedMessageId,
+    acceptKeyword,
+    pairIntent,
     trade: parseTradeMessage(messageText),
     timestamp: event.timestamp || Date.now(),
     time: formatDate(event.timestamp || Date.now())
@@ -1136,6 +1188,17 @@ function trackGroupMessage(event) {
 function findTrackedMessage(messageId) {
   if (!messageId) return null;
   return readMessages().find((message) => message.id === messageId) || null;
+}
+
+function createPairOrderId(timestamp, messageId) {
+  const seed = `${timestamp}:${messageId || ''}`;
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) % 100000;
+  }
+
+  return String(hash).padStart(5, '0');
 }
 
 function updateTrackedMessage(messageId, patch) {
@@ -1218,42 +1281,125 @@ function createWoundFromReply(event) {
   const acceptKeyword = parseAcceptMessage(getMessageText(event));
   const quotedMessage = findTrackedMessage(event.message.quotedMessageId);
 
-  if (!acceptKeyword || !quotedMessage?.trade) return null;
+  if (!acceptKeyword || !quotedMessage) return null;
   if (quotedMessage.groupId !== source.groupId) return null;
   if (quotedMessage.roundId !== openRound.id) return null;
-  if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
 
   const nowTimestamp = event.timestamp || Date.now();
   const wounds = readWounds();
-  const existingWound = wounds.find(
+
+  if (quotedMessage.trade) {
+    if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
+
+    const existingWoundForTrade = wounds.find(
+      (wound) =>
+        wound.status === 'active' &&
+        wound.groupId === source.groupId &&
+        wound.roundId === openRound.id &&
+        wound.openMessageId === quotedMessage.id
+    );
+
+    if (existingWoundForTrade) {
+      return {
+        type: 'wound_rejected',
+        reason: 'already_paired',
+        openMessageId: quotedMessage.id,
+        openerUserId: quotedMessage.userId,
+        accepterUserId: source.userId || '',
+        requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade),
+        existingWoundId: existingWoundForTrade.id
+      };
+    }
+
+    return {
+      type: 'pair_pending',
+      openMessageId: quotedMessage.id,
+      openerUserId: quotedMessage.userId,
+      accepterUserId: source.userId || '',
+      requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade)
+    };
+  }
+
+  const pairIntent = quotedMessage.pairIntent;
+  if (!pairIntent) return null;
+  if (pairIntent.groupId !== source.groupId || pairIntent.roundId !== openRound.id) return null;
+  if (pairIntent.openerUserId !== source.userId) return null;
+  if (!pairIntent.accepterUserId || pairIntent.accepterUserId === source.userId) return null;
+
+  const tradeMessage = findTrackedMessage(pairIntent.openMessageId);
+  if (!tradeMessage?.trade) return null;
+  if (tradeMessage.groupId !== source.groupId || tradeMessage.roundId !== openRound.id) return null;
+
+  const existingWoundForTrade = wounds.find(
     (wound) =>
       wound.status === 'active' &&
       wound.groupId === source.groupId &&
       wound.roundId === openRound.id &&
-      wound.openMessageId === quotedMessage.id &&
-      wound.accepterUserId === source.userId
+      wound.openMessageId === tradeMessage.id
   );
 
-  if (existingWound) {
-    return existingWound;
+  if (existingWoundForTrade) {
+    return {
+      type: 'wound_rejected',
+      reason: 'already_paired',
+      openMessageId: tradeMessage.id,
+      openerUserId: tradeMessage.userId,
+      accepterUserId: pairIntent.accepterUserId,
+      requiredCredit: getRequiredCreditFromTrade(tradeMessage.trade),
+      existingWoundId: existingWoundForTrade.id
+    };
+  }
+
+  const requiredCredit = getRequiredCreditFromTrade(tradeMessage.trade);
+  const openerSnapshot = getCreditSnapshot(tradeMessage.userId);
+  const accepterSnapshot = getCreditSnapshot(pairIntent.accepterUserId);
+  const insufficientCreditUsers = [];
+
+  if (requiredCredit > 0 && openerSnapshot.withdrawableBalance < requiredCredit) {
+    insufficientCreditUsers.push(tradeMessage.userId);
+  }
+
+  if (requiredCredit > 0 && accepterSnapshot.withdrawableBalance < requiredCredit) {
+    insufficientCreditUsers.push(pairIntent.accepterUserId);
+  }
+
+  if (insufficientCreditUsers.length > 0) {
+    return {
+      type: 'wound_rejected',
+      reason: 'insufficient_credit',
+      openMessageId: tradeMessage.id,
+      openerUserId: tradeMessage.userId,
+      accepterUserId: pairIntent.accepterUserId,
+      requiredCredit,
+      openerAvailableCredit: openerSnapshot.withdrawableBalance,
+      accepterAvailableCredit: accepterSnapshot.withdrawableBalance,
+      insufficientCreditUsers
+    };
   }
 
   const woundEntry = {
-    id: `${source.groupId}:${quotedMessage.id}:${event.message.id || nowTimestamp}`,
+    id: `${source.groupId}:${tradeMessage.id}:${event.message.id || nowTimestamp}`,
+    orderId: createPairOrderId(nowTimestamp, event.message.id),
     status: 'active',
     groupId: source.groupId || '',
     roundId: openRound.id,
     roundName: openRound.queueName,
-    openerUserId: quotedMessage.userId,
-    accepterUserId: source.userId || '',
-    openMessageId: quotedMessage.id,
-    acceptMessageId: event.message.id || '',
-    openText: quotedMessage.text,
-    acceptText: getMessageText(event),
-    openKeyword: quotedMessage.trade.keyword,
-    acceptKeyword,
-    side: quotedMessage.trade.side,
-    amount: quotedMessage.trade.amount,
+    openerUserId: tradeMessage.userId,
+    accepterUserId: pairIntent.accepterUserId,
+    openMessageId: tradeMessage.id,
+    acceptMessageId: quotedMessage.id || '',
+    confirmMessageId: event.message.id || '',
+    openText: tradeMessage.text,
+    acceptText: quotedMessage.text,
+    confirmText: getMessageText(event),
+    openKeyword: tradeMessage.trade.keyword,
+    acceptKeyword: quotedMessage.acceptKeyword || quotedMessage.text,
+    confirmKeyword: acceptKeyword,
+    side: tradeMessage.trade.side,
+    amount: tradeMessage.trade.amount,
+    requiredCredit,
+    openerAvailableBefore: openerSnapshot.withdrawableBalance,
+    accepterAvailableBefore: accepterSnapshot.withdrawableBalance,
     openedTimestamp: nowTimestamp,
     openedTime: formatDate(nowTimestamp),
     result: '',
@@ -1263,7 +1409,21 @@ function createWoundFromReply(event) {
   };
 
   writeWounds([woundEntry, ...wounds]);
-  return woundEntry;
+  return {
+    type: 'wound_created',
+    wound: woundEntry,
+    notificationTargets: [woundEntry.openerUserId, woundEntry.accepterUserId].filter(Boolean),
+    privateNotifications: [
+      {
+        to: woundEntry.openerUserId,
+        messages: [buildPairSuccessFlex(woundEntry, woundEntry.openerUserId)]
+      },
+      {
+        to: woundEntry.accepterUserId,
+        messages: [buildPairSuccessFlex(woundEntry, woundEntry.accepterUserId)]
+      }
+    ].filter((notification) => notification.to)
+  };
 }
 
 function isRegisteredAdmin(userId, groupId) {
@@ -1518,8 +1678,8 @@ app.post(
           const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
-          const woundEntry = createWoundFromReply(event);
           const trackedMessage = trackGroupMessage(event);
+          const woundAction = createWoundFromReply(event);
           const unsendAction = await handleUnsendEvent(event);
           const creditAction = handleCreditEvent(event);
 
@@ -1557,9 +1717,37 @@ app.post(
             }
           }
 
-          if (woundEntry) {
+          if (woundAction?.type === 'wound_created') {
+            const woundEntry = woundAction.wound;
             logEntry.woundCreated = true;
             logEntry.woundId = woundEntry.id;
+            logEntry.woundOrderId = woundEntry.orderId;
+            logEntry.requiredCredit = woundEntry.requiredCredit;
+            logEntry.woundNotificationTargets = woundAction.notificationTargets;
+
+            for (const notification of woundAction.privateNotifications || []) {
+              replyJobs.push(pushToLine(notification.to, notification.messages));
+            }
+          }
+
+          if (woundAction?.type === 'pair_pending') {
+            logEntry.woundPending = true;
+            logEntry.openMessageId = woundAction.openMessageId;
+            logEntry.openerUserId = woundAction.openerUserId;
+            logEntry.accepterUserId = woundAction.accepterUserId;
+            logEntry.requiredCredit = woundAction.requiredCredit;
+          }
+
+          if (woundAction?.type === 'wound_rejected') {
+            logEntry.woundRejectedReason = woundAction.reason;
+            logEntry.openMessageId = woundAction.openMessageId;
+            logEntry.openerUserId = woundAction.openerUserId;
+            logEntry.accepterUserId = woundAction.accepterUserId;
+            logEntry.requiredCredit = woundAction.requiredCredit;
+            logEntry.openerAvailableCredit = woundAction.openerAvailableCredit;
+            logEntry.accepterAvailableCredit = woundAction.accepterAvailableCredit;
+            logEntry.insufficientCreditUsers = woundAction.insufficientCreditUsers || [];
+            logEntry.existingWoundId = woundAction.existingWoundId || '';
           }
 
           if (trackedMessage?.trade) {
