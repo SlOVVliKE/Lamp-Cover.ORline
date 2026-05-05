@@ -87,6 +87,7 @@ Start Command: npm start
 ```text
 LINE_CHANNEL_SECRET=your_line_channel_secret
 LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
+LINE_OFFICIAL_ACCOUNT_URL=https://line.me/R/ti/p/your_line_oa_id
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:
@@ -162,6 +163,12 @@ Admin registrations can be viewed at:
 https://your-render-app.onrender.com/admins
 ```
 
+To remove yourself as an admin, send this command to the LINE OA in a private chat:
+
+```text
+IAMNOTADMIN : group name
+```
+
 ## Wounds / Bonds
 
 In a group chat, the app creates an active wound only while a queue round is open.
@@ -208,6 +215,31 @@ If the builder price is known after close, send:
 
 ```text
 ราคาช่าง 300-320
+```
+
+The bot will reply in the same queue-card format:
+
+```text
+ศราช
+
+ช่าง 350-380 ⛔️
+
+🚀🚀🚀🚀🚀
+```
+
+If a group member sends:
+
+```text
+หลังบ้าน
+```
+
+the bot replies with the LINE OA link from `LINE_OFFICIAL_ACCOUNT_URL`.
+
+To manually close the last queue of the day and show the played queue summary plus the thank-you message, an admin can send either:
+
+```text
+ปิดคิวสุดท้าย
+สิ้นสุด
 ```
 
 Tracked opening keywords:

@@ -9,7 +9,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+const LINE_OFFICIAL_ACCOUNT_URL = process.env.LINE_OFFICIAL_ACCOUNT_URL || process.env.LINE_OA_URL || '';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
+const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
 const ADMIN_FILE = path.join(__dirname, 'admins.json');
 const MESSAGE_FILE = path.join(__dirname, 'messages.json');
@@ -202,12 +204,8 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function parseAdminCommand(message) {
-  const pattern = new RegExp(`^\\s*${escapeRegExp(ADMIN_KEYWORD)}\\s*:\\s*(.+?)\\s*$`, 'i');
-  const match = String(message || '').match(pattern);
-  if (!match) return null;
-
-  const groupName = match[1].trim();
+function parseAdminGroupTarget(value) {
+  const groupName = String(value || '').trim();
   if (!groupName) return null;
 
   // A trailing number marks the admin priority: "Group1" or "Group 1".
@@ -221,6 +219,22 @@ function parseAdminCommand(message) {
     rawGroupName: groupName,
     priority
   };
+}
+
+function parseAdminCommand(message) {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(ADMIN_KEYWORD)}\\s*:\\s*(.+?)\\s*$`, 'i');
+  const match = String(message || '').match(pattern);
+  if (!match) return null;
+
+  return parseAdminGroupTarget(match[1]);
+}
+
+function parseRemoveAdminCommand(message) {
+  const pattern = new RegExp(`^\\s*${escapeRegExp(REMOVE_ADMIN_KEYWORD)}\\s*:\\s*(.+?)\\s*$`, 'i');
+  const match = String(message || '').match(pattern);
+  if (!match) return null;
+
+  return parseAdminGroupTarget(match[1]);
 }
 
 function parseBindGroupCommand(message) {
@@ -483,11 +497,20 @@ function parseCloseCommand(message) {
   return normalizeMessageText(message) === 'ปิด';
 }
 
+function parseFinishQueueCommand(message) {
+  const text = normalizeMessageText(message);
+  return text === 'ปิดคิวสุดท้าย' || text === 'สิ้นสุด' || text === 'ปิดคิวสุดท้าย, สิ้นสุด';
+}
+
 function parseBuilderPriceCommand(message) {
   const match = normalizeMessageText(message).match(/^ราคาช่าง\s*(.+)$/i);
   if (!match) return null;
 
   return parsePriceRange(match[1]);
+}
+
+function parseBehindHouseCommand(message) {
+  return normalizeMessageText(message) === 'หลังบ้าน';
 }
 
 function getLatestRoundForGroup(groupId) {
@@ -542,7 +565,7 @@ function buildOpenReply(round) {
   }
 
   if (round.priceRaw) {
-    return `${round.queueName}\n\nช่าง ${round.priceRaw}⛔️\n\n🚀🚀🚀🚀🚀`;
+    return `${round.queueName}\n\nช่าง ${round.priceRaw} ⛔️\n\n🚀🚀🚀🚀🚀`;
   }
 
   return `${round.queueName}\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀`;
@@ -1340,6 +1363,37 @@ function upsertAdminFromEvent(event) {
   return adminEntry;
 }
 
+function removeAdminFromEvent(event) {
+  const source = event.source || {};
+  const removeCommand = parseRemoveAdminCommand(getMessageText(event));
+
+  if (!removeCommand || source.type !== 'user' || !source.userId) {
+    return null;
+  }
+
+  const admins = readAdmins();
+  const remainingAdmins = admins.filter(
+    (admin) => !(admin.groupKey === removeCommand.groupKey && admin.userId === source.userId)
+  );
+  const removedCount = admins.length - remainingAdmins.length;
+
+  if (removedCount > 0) {
+    writeAdmins(remainingAdmins);
+  }
+
+  return {
+    removed: removedCount > 0,
+    removedCount,
+    groupName: removeCommand.groupName,
+    groupKey: removeCommand.groupKey,
+    userId: source.userId,
+    replyTexts:
+      removedCount > 0
+        ? [`ยกเลิกแอดมินกลุ่ม ${removeCommand.groupName} แล้ว`]
+        : [`ไม่พบสิทธิ์แอดมินกลุ่ม ${removeCommand.groupName}`]
+  };
+}
+
 function bindGroupFromEvent(event) {
   if (!isGroupTextMessage(event)) return null;
 
@@ -1389,6 +1443,24 @@ function bindGroupFromEvent(event) {
 
 function isGroupTextMessage(event) {
   return event.type === 'message' && event.message?.type === 'text' && event.source?.type === 'group';
+}
+
+function handleBehindHouseCommand(event) {
+  if (!isGroupTextMessage(event) || !parseBehindHouseCommand(getMessageText(event))) {
+    return null;
+  }
+
+  if (!LINE_OFFICIAL_ACCOUNT_URL) {
+    return {
+      link: '',
+      replyTexts: []
+    };
+  }
+
+  return {
+    link: LINE_OFFICIAL_ACCOUNT_URL,
+    replyTexts: [LINE_OFFICIAL_ACCOUNT_URL]
+  };
 }
 
 function trackGroupMessage(event) {
@@ -1778,6 +1850,17 @@ function handleQueueAdminCommand(event) {
   }
 
   const nowTimestamp = event.timestamp || Date.now();
+  if (parseFinishQueueCommand(messageText)) {
+    const queueFinishedReply = buildQueueFinishedReply();
+    return {
+      type: 'queue_day_finished',
+      round: getLatestRoundForGroup(source.groupId),
+      queueFinished: true,
+      queueFinishedReply,
+      replyTexts: [buildQueueSummary(source.groupId), queueFinishedReply]
+    };
+  }
+
   const openCommand = parseOpenCommand(messageText);
   if (openCommand) {
     const latestRound = getLatestRoundForGroup(source.groupId);
@@ -1862,7 +1945,7 @@ function handleQueueAdminCommand(event) {
     return {
       type: 'builder_price_set',
       round: updatedRound,
-      replyTexts: [`บันทึกราคาช่าง ${builderPrice.raw} สำหรับ ${updatedRound.queueName}`]
+      replyTexts: [buildOpenReply(updatedRound)]
     };
   }
 
@@ -1961,9 +2044,11 @@ app.post(
         for (const event of events) {
           const logEntry = createLogEntry(event);
           const adminEntry = upsertAdminFromEvent(event);
+          const removedAdminEntry = removeAdminFromEvent(event);
           const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
+          const behindHouseAction = handleBehindHouseCommand(event);
           const trackedMessage = trackGroupMessage(event);
           const woundAction = createWoundFromReply(event);
           const unsendAction = await handleUnsendEvent(event);
@@ -1973,6 +2058,16 @@ app.post(
             logEntry.adminRegistered = true;
             logEntry.adminGroupName = adminEntry.groupName;
             logEntry.adminPriority = adminEntry.priority;
+          }
+
+          if (removedAdminEntry) {
+            logEntry.adminRemoved = removedAdminEntry.removed;
+            logEntry.adminRemovedGroupName = removedAdminEntry.groupName;
+            logEntry.adminRemovedCount = removedAdminEntry.removedCount;
+
+            if (Array.isArray(removedAdminEntry.replyTexts) && removedAdminEntry.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, removedAdminEntry.replyTexts));
+            }
           }
 
           if (bindEntry) {
@@ -1995,6 +2090,7 @@ app.post(
             logEntry.blockedQueueName = queueAction.blockedQueueName || '';
             logEntry.queueFinished = Boolean(queueAction.queueFinished);
             logEntry.queueReplyTextCount = Array.isArray(queueAction.replyTexts) ? queueAction.replyTexts.length : 0;
+            logEntry.queueReplyTexts = Array.isArray(queueAction.replyTexts) ? queueAction.replyTexts : [];
             logEntry.queueFinishedReply = queueAction.queueFinishedReply || '';
 
             if (typeof queueAction.closedCount === 'number') {
@@ -2015,6 +2111,18 @@ app.post(
 
             if (Array.isArray(queueAction.replyTexts) && queueAction.replyTexts.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, queueAction.replyTexts));
+            }
+          }
+
+          if (behindHouseAction) {
+            logEntry.behindHouseRequested = true;
+            logEntry.behindHouseLink = behindHouseAction.link || '';
+            logEntry.behindHouseReplyTexts = Array.isArray(behindHouseAction.replyTexts)
+              ? behindHouseAction.replyTexts
+              : [];
+
+            if (Array.isArray(behindHouseAction.replyTexts) && behindHouseAction.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, behindHouseAction.replyTexts));
             }
           }
 

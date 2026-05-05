@@ -36,6 +36,7 @@ async function startServer() {
       ...process.env,
       PORT: String(port),
       LINE_CHANNEL_SECRET: '',
+      LINE_OFFICIAL_ACCOUNT_URL: 'https://line.me/R/ti/p/@lamp-cover',
       ADMIN_KEYWORD: 'I AM ADMIN'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -700,6 +701,52 @@ test('opens a queue round and ignores new wounds after close', async () => {
   }
 });
 
+test('replies with the queue card format after setting the builder price', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gbuilder-price', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-open', text: 'เปิด ศราช' },
+        timestamp: 1710000001000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-close', text: 'ปิด' },
+        timestamp: 1710000002000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-price', text: 'ราคาช่าง 350-380' },
+        timestamp: 1710000003000
+      }
+    ]);
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].queueName, 'ศราช');
+    assert.equal(rounds[0].priceRaw, '350-380');
+    assert.equal(rounds[0].noBuilderPrice, false);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const priceLog = logs.find((log) => log.queueAction === 'builder_price_set');
+
+    assert.deepEqual(priceLog.queueReplyTexts, ['ศราช\n\nช่าง 350-380 ⛔️\n\n🚀🚀🚀🚀🚀']);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('confirms result twice and records the queue price verdict', async () => {
   const server = await startServer();
 
@@ -1184,6 +1231,81 @@ test('sends a closing report message after the last queue item is resulted', asy
   }
 });
 
+test('admin can send the final queue command to show the day summary and thanks', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ บ้านคุ้ม ต.คูเมือง',
+      'อ.มหาชนะชัย จ.ยโสธร',
+      '4  พฤษภาคม  2569',
+      '',
+      'ศราช',
+      'ฟีจะเอา',
+      '',
+      'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gmanual-finish', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-queue-list', text: queueText },
+        timestamp: 1710000070000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-open-1', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000071000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-close-1', text: 'ปิด' },
+        timestamp: 1710000072000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-result-1a', text: 'แจ้งผล 400' },
+        timestamp: 1710000073000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-result-1b', text: 'แจ้งผล 400' },
+        timestamp: 1710000074000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-manual-finish-command', text: 'ปิดคิวสุดท้าย' },
+        timestamp: 1710000075000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const finishLog = logs.find((log) => log.queueAction === 'queue_day_finished');
+
+    assert.equal(finishLog.queueReplyTextCount, 2);
+    assert.match(finishLog.queueReplyTexts[0], /^คิวจุด✅/);
+    assert.match(finishLog.queueReplyTexts[0], /ศราช 350-380 400✅/);
+    assert.match(finishLog.queueReplyTexts[1], /^❌จบการรายงาน/);
+    assert.match(finishLog.queueReplyTexts[1], /ส่งเลขบัญชีไว้หลังบ้านได้เลยนะครับ/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('does not allow an admin to control an unbound group', async () => {
   const server = await startServer();
 
@@ -1209,6 +1331,62 @@ test('does not allow an admin to control an unbound group', async () => {
 
     const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
     assert.equal(rounds.length, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('removes an admin registration from a private IAMNOTADMIN command', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gremove-admin', 'UremoveAdmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UremoveAdmin' },
+        message: { type: 'text', id: 'm-remove-admin', text: 'IAMNOTADMIN : บ้านคุ้ม' },
+        timestamp: 1710000080000
+      }
+    ]);
+
+    const admins = await (await fetch(`${server.baseUrl}/api/admins`)).json();
+    assert.equal(admins.some((admin) => admin.userId === 'UremoveAdmin' && admin.groupName === 'บ้านคุ้ม'), false);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const removeLog = logs.find((log) => log.adminRemoved);
+    assert.equal(removeLog.adminRemovedGroupName, 'บ้านคุ้ม');
+    assert.equal(removeLog.adminRemovedCount, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with the LINE OA link when a group member asks for หลังบ้าน', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbehind', userId: 'Umember' },
+        replyToken: 'reply-behind-house',
+        message: { type: 'text', id: 'm-behind-house', text: 'หลังบ้าน' },
+        timestamp: 1710000081000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const linkLog = logs.find((log) => log.behindHouseRequested);
+
+    assert.equal(linkLog.behindHouseLink, 'https://line.me/R/ti/p/@lamp-cover');
+    assert.deepEqual(linkLog.behindHouseReplyTexts, ['https://line.me/R/ti/p/@lamp-cover']);
   } finally {
     await server.stop();
   }
