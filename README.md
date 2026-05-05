@@ -266,6 +266,15 @@ A registered admin confirms the result with a two-step command:
 
 The first result command asks for confirmation. Send the same `แจ้งผล ...` again within 5 minutes to close active wounds and mark the queue round result.
 If an admin tries to open the next queue round before the latest round has a confirmed result, the bot will warn the group and keep the new round from opening.
+When every item in the saved queue list has a confirmed result, the bot sends a final closing report message:
+
+```text
+❌จบการรายงาน
+สำหรับวันนี้ทางทีมงานขอขอบคุณ
+และสวัสดีครับบบ 🙏
+**ส่งเลขบัญชีไว้หลังบ้านได้เลยนะครับ
+✅✅✅
+```
 
 Wounds can be viewed at:
 

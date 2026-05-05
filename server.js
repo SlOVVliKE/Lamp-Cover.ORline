@@ -602,6 +602,34 @@ function buildQueueSummary(groupId) {
   return `คิวจุด✅\n\n${lines.join('\n')}${note}`;
 }
 
+function buildQueueFinishedReply() {
+  return [
+    '❌จบการรายงาน',
+    'สำหรับวันนี้ทางทีมงานขอขอบคุณ',
+    'และสวัสดีครับบบ 🙏',
+    '**ส่งเลขบัญชีไว้หลังบ้านได้เลยนะครับ',
+    '✅✅✅'
+  ].join('\n');
+}
+
+function isQueueListFinished(groupId) {
+  const queueList = getLatestQueueListForGroup(groupId);
+  if (!queueList || !Array.isArray(queueList.items) || queueList.items.length === 0) {
+    return false;
+  }
+
+  const roundsByName = new Map(
+    readRounds()
+      .filter((round) => round.groupId === groupId)
+      .map((round) => [normalizeGroupName(round.queueName), round])
+  );
+
+  return queueList.items.every((item) => {
+    const round = roundsByName.get(normalizeGroupName(item.name));
+    return round?.status === 'resulted';
+  });
+}
+
 function toLineMessage(message) {
   if (typeof message === 'string') {
     return {
@@ -1672,6 +1700,7 @@ function handleQueueAdminCommand(event) {
     };
   }
 
+  const wasQueueFinishedBefore = isQueueListFinished(source.groupId);
   const resultIcon = getResultIcon(round, result);
   const resultedRound = {
     ...round,
@@ -1687,12 +1716,21 @@ function handleQueueAdminCommand(event) {
   const closedCount = closeWoundsForRound(event, result, resultedRound);
 
   upsertRound(resultedRound);
+  const queueFinished = !wasQueueFinishedBefore && isQueueListFinished(source.groupId);
+  const queueFinishedReply = queueFinished ? buildQueueFinishedReply() : '';
+  const replyTexts = [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)];
+  if (queueFinishedReply) {
+    replyTexts.push(queueFinishedReply);
+  }
+
   return {
     type: 'result_confirmed',
     round: resultedRound,
     result,
     closedCount,
-    replyTexts: [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)]
+    queueFinished,
+    queueFinishedReply,
+    replyTexts
   };
 }
 
@@ -1755,6 +1793,9 @@ app.post(
             logEntry.queueName = queueAction.round?.queueName || '';
             logEntry.result = queueAction.result || '';
             logEntry.blockedQueueName = queueAction.blockedQueueName || '';
+            logEntry.queueFinished = Boolean(queueAction.queueFinished);
+            logEntry.queueReplyTextCount = Array.isArray(queueAction.replyTexts) ? queueAction.replyTexts.length : 0;
+            logEntry.queueFinishedReply = queueAction.queueFinishedReply || '';
 
             if (typeof queueAction.closedCount === 'number') {
               logEntry.woundsClosed = queueAction.closedCount;

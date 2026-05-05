@@ -873,6 +873,104 @@ test('saves a queue list posted by a group admin', async () => {
   }
 });
 
+test('sends a closing report message after the last queue item is resulted', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ บ้านคุ้ม ต.คูเมือง',
+      'อ.มหาชนะชัย จ.ยโสธร',
+      '4  พฤษภาคม  2569',
+      '',
+      'สหายหลวง',
+      'เฒ่าสำน้อย',
+      '',
+      'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gfinish');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-queue-list', text: queueText },
+        timestamp: 1710000060000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-open-1', text: 'เปิด สหายหลวง 305-340' },
+        timestamp: 1710000061000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-close-1', text: 'ปิด' },
+        timestamp: 1710000062000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-result-1a', text: 'แจ้งผล 370' },
+        timestamp: 1710000063000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-result-1b', text: 'แจ้งผล 370' },
+        timestamp: 1710000064000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-open-2', text: 'เปิด เฒ่าสำน้อย 330-370' },
+        timestamp: 1710000065000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-close-2', text: 'ปิด' },
+        timestamp: 1710000066000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-result-2a', text: 'แจ้งผล 390' },
+        timestamp: 1710000067000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfinish', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-result-2b', text: 'แจ้งผล 390' },
+        timestamp: 1710000068000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const firstResultLog = logs.find(
+      (log) => log.queueAction === 'result_confirmed' && log.queueName === 'สหายหลวง'
+    );
+    const finalResultLog = logs.find(
+      (log) => log.queueAction === 'result_confirmed' && log.queueName === 'เฒ่าสำน้อย'
+    );
+
+    assert.equal(firstResultLog.queueFinished, false);
+    assert.equal(finalResultLog.queueFinished, true);
+    assert.equal(finalResultLog.queueReplyTextCount, 3);
+    assert.match(finalResultLog.queueFinishedReply, /^❌จบการรายงาน/);
+    assert.match(finalResultLog.queueFinishedReply, /ส่งเลขบัญชีไว้หลังบ้านได้เลยนะครับ/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('does not allow an admin to control an unbound group', async () => {
   const server = await startServer();
 
