@@ -296,8 +296,9 @@ function parseAcceptMessage(message) {
 }
 
 function parseResultCommand(message) {
-  const match = normalizeMessageText(message).match(/^แจ้งผล\s*(\d+)$/i);
-  return match ? match[1] : null;
+  const match = normalizeMessageText(message).match(/^แจ้งผล\s*(.+)$/i);
+  const result = match ? match[1].trim() : '';
+  return result || null;
 }
 
 function normalizeQueueLine(line) {
@@ -490,7 +491,19 @@ function buildCloseReply(round) {
   return `❌❌❌❌ ปิด ❌❌❌❌\n\n3 2 1 ไป๊!! 🚀🚀🚀\n\n${round.queueName}\n\n⛔หลังปิดไม่ติดทุกกรณี⛔`;
 }
 
+function buildPendingResultReply(round) {
+  return `⚠️ รอบ '${round.queueName}' ยังไม่ได้แจ้งผล\nกรุณาแจ้งผล แล้วค่อยเปิดรอบใหม่`;
+}
+
+function isNumericResult(result) {
+  return /^\d+$/.test(String(result || ''));
+}
+
 function getResultIcon(round, result) {
+  if (!isNumericResult(result)) {
+    return '';
+  }
+
   const resultNumber = Number(result);
   const price = getRoundPrice(round);
 
@@ -508,11 +521,20 @@ function buildRoundResultLine(round) {
     return round.queueName;
   }
 
+  if (!isNumericResult(round.result)) {
+    return `${round.queueName} ${round.result}`;
+  }
+
   if (round.priceRaw) {
     return `${round.queueName} ${round.priceRaw} ${round.result}${round.resultIcon || getResultIcon(round, round.result)}`;
   }
 
   return `${round.queueName} ช่างไม่ต่อย ${round.result}➖`;
+}
+
+function buildResultConfirmedReply(round, result) {
+  const numericSuffix = isNumericResult(result) ? '///' : '';
+  return `${round.queueName}\n\nผล ${result}${numericSuffix}\n\n🚀🚀🚀🚀🚀`;
 }
 
 function buildQueueSummary(groupId) {
@@ -1324,6 +1346,16 @@ function handleQueueAdminCommand(event) {
   const nowTimestamp = event.timestamp || Date.now();
   const openCommand = parseOpenCommand(messageText);
   if (openCommand) {
+    const latestRound = getLatestRoundForGroup(source.groupId);
+    if (latestRound && latestRound.status !== 'resulted') {
+      return {
+        type: 'round_open_blocked_pending_result',
+        round: latestRound,
+        blockedQueueName: openCommand.queueName,
+        replyTexts: [buildPendingResultReply(latestRound)]
+      };
+    }
+
     const priceFields = getPriceFields(openCommand.price);
     const round = {
       id: `${source.groupId}:${nowTimestamp}:${event.message.id || ''}`,
@@ -1452,7 +1484,7 @@ function handleQueueAdminCommand(event) {
     round: resultedRound,
     result,
     closedCount,
-    replyTexts: [`${resultedRound.queueName}\n\nผล ${result}///\n\n🚀🚀🚀🚀🚀`, buildQueueSummary(source.groupId)]
+    replyTexts: [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)]
   };
 }
 
@@ -1514,6 +1546,7 @@ app.post(
             logEntry.queueAction = queueAction.type;
             logEntry.queueName = queueAction.round?.queueName || '';
             logEntry.result = queueAction.result || '';
+            logEntry.blockedQueueName = queueAction.blockedQueueName || '';
 
             if (typeof queueAction.closedCount === 'number') {
               logEntry.woundsClosed = queueAction.closedCount;

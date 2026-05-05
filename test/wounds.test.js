@@ -596,3 +596,83 @@ test('credit flex cards do not attach quick reply buttons or point labels', () =
   assert.equal(source.includes('quickReply'), false);
   assert.equal(source.includes('แต้ม'), false);
 });
+
+test('blocks a new queue round until the previous round result is confirmed', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gflow');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-open-first', text: 'เปิด ป.ธนวัฒน์' },
+        timestamp: 1710000010000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-close-first', text: 'ปิด' },
+        timestamp: 1710000011000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-open-blocked', text: 'เปิด สหายหลวง' },
+        timestamp: 1710000012000
+      }
+    ]);
+
+    let rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds.length, 1);
+    assert.equal(rounds[0].queueName, 'ป.ธนวัฒน์');
+    assert.equal(rounds[0].status, 'closed');
+
+    let logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const blockedLog = logs.find((log) => log.queueAction === 'round_open_blocked_pending_result');
+    assert.equal(blockedLog.queueName, 'ป.ธนวัฒน์');
+    assert.equal(blockedLog.blockedQueueName, 'สหายหลวง');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-result-first', text: 'แจ้งผล จาวทุกแผล' },
+        timestamp: 1710000013000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-result-second', text: 'แจ้งผล จาวทุกแผล' },
+        timestamp: 1710000014000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gflow', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-flow-open-second', text: 'เปิด สหายหลวง' },
+        timestamp: 1710000015000
+      }
+    ]);
+
+    rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds.length, 2);
+    assert.equal(rounds[0].queueName, 'สหายหลวง');
+    assert.equal(rounds[0].status, 'open');
+    assert.equal(rounds[1].queueName, 'ป.ธนวัฒน์');
+    assert.equal(rounds[1].status, 'resulted');
+    assert.equal(rounds[1].result, 'จาวทุกแผล');
+    assert.equal(rounds[1].resultIcon, '');
+
+    logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.queueAction === 'result_confirmation_requested' && log.result === 'จาวทุกแผล'), true);
+    assert.equal(logs.some((log) => log.queueAction === 'result_confirmed' && log.result === 'จาวทุกแผล'), true);
+  } finally {
+    await server.stop();
+  }
+});

@@ -236,9 +236,11 @@ A registered admin confirms the result with a two-step command:
 ```text
 แจ้งผล 50
 แจ้งผล40
+แจ้งผล จาวทุกแผล
 ```
 
 The first result command asks for confirmation. Send the same `แจ้งผล ...` again within 5 minutes to close active wounds and mark the queue round result.
+If an admin tries to open the next queue round before the latest round has a confirmed result, the bot will warn the group and keep the new round from opening.
 
 Wounds can be viewed at:
 
