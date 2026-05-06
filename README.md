@@ -419,14 +419,9 @@ https://your-render-app.onrender.com/api/rounds
 
 ## Credits
 
-Credit data is stored in MongoDB when `MONGODB_URI` is set, otherwise it falls back to `credits.json`. The command works only in a private chat with the LINE OA.
+Credit data is stored in MongoDB when `MONGODB_URI` is set, otherwise it falls back to `credits.json`.
 
-Add credit:
-
-```text
-C+100
-C+200, C+59
-```
+Users can add credit only by sending a bank slip image in a private chat with the LINE OA. The bot verifies the slip with EasySlip before adding credit. Text commands like `C+100` are ignored.
 
 User menu keywords:
 

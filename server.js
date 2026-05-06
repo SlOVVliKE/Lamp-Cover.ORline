@@ -858,29 +858,6 @@ function toLineMessage(message) {
   return message;
 }
 
-function parseCreditAddCommand(message) {
-  const text = String(message || '').trim();
-  if (!text) return null;
-
-  const parts = text.split(',').map((part) => part.trim()).filter(Boolean);
-  if (parts.length === 0) return null;
-
-  const amounts = [];
-  for (const part of parts) {
-    const match = part.match(/^c\s*\+\s*(\d+(?:\.\d{1,2})?)$/i);
-    if (!match) return null;
-
-    const amount = Number(match[1]);
-    if (!Number.isFinite(amount) || amount <= 0) return null;
-    amounts.push(amount);
-  }
-
-  return {
-    amounts,
-    total: roundPoints(amounts.reduce((sum, amount) => sum + amount, 0))
-  };
-}
-
 function parseCreditKeyword(message) {
   const text = normalizeMessageText(message);
   if (['เช็คยอดเงิน', 'เช็คยอด'].includes(text)) return 'balance';
@@ -1674,21 +1651,6 @@ function handleCreditEvent(event) {
 
   if (source.type !== 'user') {
     return null;
-  }
-
-  const creditCommand = parseCreditAddCommand(messageText);
-  if (creditCommand) {
-    const result = addCreditForUser(event, creditCommand.total, messageText);
-    const snapshot = getCreditSnapshot(source.userId);
-
-    return {
-      type: 'credit_added',
-      amount: creditCommand.total,
-      creditBalance: result.credit.balance,
-      activeWoundAmount: snapshot.activeWoundAmount,
-      withdrawableBalance: snapshot.withdrawableBalance,
-      replyMessages: [buildCreditAddedFlex(creditCommand.total, snapshot)]
-    };
   }
 
   const keyword = parseCreditKeyword(messageText);
@@ -4199,7 +4161,7 @@ app.get('/credits', (req, res) => {
         <button class="danger" type="button" onclick="clearCredits()">Clear Credits</button>
       </div>
     </div>
-    <p class="hint">Private commands: <code>C+100</code>, <code>C+200, C+59</code>, <code>เช็คยอดเงิน</code>, <code>แผลที่กำลังติด</code>, <code>ถอนยอดเงิน</code></p>
+    <p class="hint">เติมเครดิตด้วยการส่งรูปสลิปในแชทส่วนตัวเท่านั้น คำสั่งส่วนตัว: <code>เช็คยอดเงิน</code>, <code>แผลที่กำลังติด</code>, <code>ถอนยอดเงิน</code></p>
     <div class="table-wrap">
       ${
         rows

@@ -5,6 +5,7 @@ const { spawn } = require('node:child_process');
 const test = require('node:test');
 
 const SERVER_READY_TIMEOUT_MS = 15000;
+const CREDIT_FILE = 'credits.json';
 let nextPort = 3300 + Math.floor(Math.random() * 500);
 
 function delay(ms) {
@@ -53,6 +54,7 @@ async function startServer(envOverrides = {}) {
       LINE_CHANNEL_SECRET: '',
       LINE_OFFICIAL_ACCOUNT_URL: 'https://line.me/R/ti/p/@lamp-cover',
       ADMIN_KEYWORD: 'I AM ADMIN',
+      MONGODB_URI: '',
       ...envOverrides
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -110,11 +112,45 @@ async function registerAndBindAdmin(baseUrl, groupId, userId = 'Uadmin', groupNa
   ]);
 }
 
+function seedCredit(userId, amount, id, timestamp) {
+  const credits = JSON.parse(fs.readFileSync(CREDIT_FILE, 'utf8'));
+  const existing = credits.find((credit) => credit.userId === userId) || {
+    userId,
+    balance: 0,
+    totalAdded: 0,
+    transactions: []
+  };
+  const nextBalance = Number(existing.balance || 0) + amount;
+  const transaction = {
+    id: `${id}:test-seed`,
+    type: 'test_credit_seed',
+    amount,
+    rawText: 'test credit seed',
+    messageId: id,
+    balanceAfter: nextBalance,
+    timestamp,
+    time: new Date(timestamp).toISOString()
+  };
+  const nextCredit = {
+    ...existing,
+    balance: nextBalance,
+    totalAdded: Number(existing.totalAdded || 0) + amount,
+    transactions: [transaction, ...(existing.transactions || [])],
+    updatedTimestamp: timestamp,
+    updatedTime: transaction.time
+  };
+  const nextCredits = [nextCredit, ...credits.filter((credit) => credit.userId !== userId)];
+
+  fs.writeFileSync(CREDIT_FILE, JSON.stringify(nextCredits, null, 2), 'utf8');
+}
+
 function creditEvent(userId, amount, id, timestamp) {
+  seedCredit(userId, amount, id, timestamp);
+
   return {
     type: 'message',
     source: { type: 'user', userId },
-    message: { type: 'text', id, text: `C+${amount}` },
+    message: { type: 'text', id, text: `seed credit ${amount}` },
     timestamp
   };
 }
@@ -2028,7 +2064,7 @@ test('sends behind house payment text and profile card in one LINE reply call', 
   assert.match(behindHouseBlock, /behindHouseAction\.replyMessages/);
 });
 
-test('adds private chat credit from C+ commands', async () => {
+test('ignores private chat C+ credit commands because credit requires a verified slip', async () => {
   const server = await startServer();
 
   try {
@@ -2060,14 +2096,11 @@ test('adds private chat credit from C+ commands', async () => {
     ]);
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
-    const credit = credits.find((row) => row.userId === 'Ucredit');
-
-    assert.equal(credit.balance, 359);
-    assert.equal(credit.totalAdded, 359);
-    assert.equal(credit.transactions.length, 2);
+    assert.equal(credits.some((row) => row.userId === 'Ucredit'), false);
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
-    assert.equal(logs.filter((log) => log.creditAction === 'credit_added').length, 2);
+    assert.equal(logs.some((log) => log.creditAction === 'credit_added'), false);
+    assert.equal(logs.some((log) => log.message === 'C+100'), true);
   } finally {
     await server.stop();
   }
@@ -2201,13 +2234,7 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
     await registerAndBindAdmin(server.baseUrl, 'Gcredit2');
 
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'Ubuyer' },
-        replyToken: 'reply-credit-add',
-        message: { type: 'text', id: 'm-credit-add-buyer', text: 'C+120' },
-        timestamp: 1710000000000
-      },
+      creditEvent('Ubuyer', 120, 'm-credit-add-buyer', 1710000000000),
       creditEvent('Useller', 100, 'm-credit-add-seller', 1710000000500),
       {
         type: 'message',
@@ -2391,24 +2418,9 @@ test('requires available credit before creating a wound and lets the next accept
     await registerAndBindAdmin(server.baseUrl, 'Gcredit-gate');
 
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UopenerCredit' },
-        message: { type: 'text', id: 'm-credit-opener-170', text: 'C+170' },
-        timestamp: 1710000020000
-      },
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UpoorAccepter' },
-        message: { type: 'text', id: 'm-credit-poor-100', text: 'C+100' },
-        timestamp: 1710000020001
-      },
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UrichAccepter' },
-        message: { type: 'text', id: 'm-credit-rich-200', text: 'C+200' },
-        timestamp: 1710000020002
-      },
+      creditEvent('UopenerCredit', 170, 'm-credit-opener-170', 1710000020000),
+      creditEvent('UpoorAccepter', 100, 'm-credit-poor-100', 1710000020001),
+      creditEvent('UrichAccepter', 200, 'm-credit-rich-200', 1710000020002),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gcredit-gate', userId: 'Uadmin' },
@@ -2469,30 +2481,10 @@ test('reserves active wound credit across multiple pairs and blocks duplicate ac
     await registerAndBindAdmin(server.baseUrl, 'Gcredit-reserve');
 
     await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UmultiOpener' },
-        message: { type: 'text', id: 'm-credit-multi-opener', text: 'C+370' },
-        timestamp: 1710000030000
-      },
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UacceptOne' },
-        message: { type: 'text', id: 'm-credit-accept-one', text: 'C+200' },
-        timestamp: 1710000030001
-      },
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UacceptTwo' },
-        message: { type: 'text', id: 'm-credit-accept-two', text: 'C+250' },
-        timestamp: 1710000030002
-      },
-      {
-        type: 'message',
-        source: { type: 'user', userId: 'UacceptThree' },
-        message: { type: 'text', id: 'm-credit-accept-three', text: 'C+250' },
-        timestamp: 1710000030003
-      },
+      creditEvent('UmultiOpener', 370, 'm-credit-multi-opener', 1710000030000),
+      creditEvent('UacceptOne', 200, 'm-credit-accept-one', 1710000030001),
+      creditEvent('UacceptTwo', 250, 'm-credit-accept-two', 1710000030002),
+      creditEvent('UacceptThree', 250, 'm-credit-accept-three', 1710000030003),
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gcredit-reserve', userId: 'Uadmin' },
