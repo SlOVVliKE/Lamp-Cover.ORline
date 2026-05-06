@@ -388,6 +388,10 @@ function parseBindGroupCommand(message) {
 
 const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้า'];
 const BASE_TRADE_KEYWORDS = [
+  { keyword: 'ช่างไล่', side: 'chang_dai' },
+  { keyword: 'ช่างยั่ง', side: 'chang_yang' },
+  { keyword: 'ช่างถอย', side: 'chang_yang' },
+  { keyword: 'ช่างมา', side: 'number_ma' },
   { keyword: 'ชล', side: 'chang_dai', adjustable: true },
   { keyword: 'ล', side: 'chang_dai', adjustable: true },
   { keyword: 'ไล่', side: 'chang_dai' },

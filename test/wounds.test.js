@@ -959,6 +959,67 @@ test('admin can announce no-builder play rules and mark the current round as no 
   }
 });
 
+test('tracks all trade examples from the latest play guide', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/messages');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gguide');
+
+    const examples = [
+      ['m-guide-chol', 'ชล200', 'ชล', '200', 'chang_dai'],
+      ['m-guide-chy', 'ชย500', 'ชย', '500', 'chang_yang'],
+      ['m-guide-chot', 'ชถ300', 'ชถ', '300', 'chang_yang'],
+      ['m-guide-plus-thor', '+5ถ500', '+5ถ', '500', 'chang_yang'],
+      ['m-guide-plus-lai', '+5ล300', '+5ล', '300', 'chang_dai'],
+      ['m-guide-single-lai', '400ล100', 'ล', '100', 'chang_dai'],
+      ['m-guide-range-lai', '320-350ล500', 'ล', '500', 'chang_dai'],
+      ['m-guide-range-thor', '370-420ถ1000', 'ถ', '1000', 'chang_yang'],
+      ['m-guide-fallback', '330-370ล1000 ชตย', 'ล', '1000', 'chang_dai'],
+      ['m-guide-builder-lai', 'ช่างไล่200', 'ช่างไล่', '200', 'chang_dai'],
+      ['m-guide-builder-thoi', 'ช่างถอย500', 'ช่างถอย', '500', 'chang_yang'],
+      ['m-guide-builder-yang', 'ช่างยั่ง100', 'ช่างยั่ง', '100', 'chang_yang'],
+      ['m-guide-builder-ma', 'ช่างมา10000', 'ช่างมา', '10000', 'number_ma'],
+      ['m-guide-chot-live', 'ชถ100', 'ชถ', '100', 'chang_yang']
+    ];
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gguide', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-guide-open-round', text: 'เปิด กอดก้อนเมฆ 300-350' },
+        timestamp: 1710000040200
+      },
+      ...examples.map(([id, text], index) => ({
+        type: 'message',
+        source: { type: 'group', groupId: 'Gguide', userId: `Uguide${index}` },
+        message: { type: 'text', id, text },
+        timestamp: 1710000040300 + index
+      }))
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const byMessageText = new Map(logs.map((log) => [log.message, log]));
+    const messages = JSON.parse(fs.readFileSync('messages.json', 'utf8'));
+    const messageById = new Map(messages.map((message) => [message.id, message]));
+
+    for (const [id, text, keyword, amount, side] of examples) {
+      const log = byMessageText.get(text);
+      assert.ok(log, text);
+      assert.equal(log.tradeKeyword, keyword, text);
+      assert.equal(String(log.tradeAmount), amount, text);
+      const message = messageById.get(id);
+      assert.equal(message.trade.side, side, text);
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
 test('no-builder fallback aliases reserve credit and auto-cancel when a builder price is later set', async () => {
   const server = await startServer();
 
