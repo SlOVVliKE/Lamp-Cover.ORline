@@ -882,6 +882,214 @@ test('accepts custom Thai prices and reserves extra credit for ชตย stakes'
   }
 });
 
+test('admin can announce no-builder play rules and mark the current round as no builder', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gno-builder-announce');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-announce', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-round-open', text: 'เปิด ศราช 350-380' },
+        timestamp: 1710000049600
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-announce', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-announce', text: 'ช่างบ่ตี @All' },
+        timestamp: 1710000049700
+      }
+    ]);
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].queueName, 'ศราช');
+    assert.equal(rounds[0].noBuilderPrice, true);
+    assert.equal(rounds[0].priceRaw, '');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const announcementLog = logs.find((log) => log.queueAction === 'no_builder_announced');
+    assert.ok(announcementLog);
+    assert.match(announcementLog.queueReplyTexts.join('\n'), /ช่างตีไม่ติด/);
+    assert.match(announcementLog.queueReplyTexts.join('\n'), /ช่างตียก/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('no-builder fallback aliases reserve credit and auto-cancel when a builder price is later set', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gno-builder-fallback');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UnoBuilderFallbackOpen', 1000, 'm-credit-no-builder-fallback-open', 1710000049800),
+      creditEvent('UnoBuilderFallbackAccept', 1000, 'm-credit-no-builder-fallback-accept', 1710000049801),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-open-round', text: 'เปิด ศราช' },
+        timestamp: 1710000049900
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-announce', text: 'ช่างไม่ตี' },
+        timestamp: 1710000049950
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'UnoBuilderFallbackOpen' },
+        message: { type: 'text', id: 'm-no-builder-fallback-trade', text: '345-385ล500' },
+        timestamp: 1710000050000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'UnoBuilderFallbackAccept' },
+        message: {
+          type: 'text',
+          id: 'm-no-builder-fallback-accept',
+          quotedMessageId: 'm-no-builder-fallback-trade',
+          text: 'ช่างตีไม่ติด'
+        },
+        timestamp: 1710000050100
+      },
+      confirmPairEvent(
+        'Gno-builder-fallback',
+        'UnoBuilderFallbackOpen',
+        'm-no-builder-fallback-accept',
+        'm-no-builder-fallback-confirm',
+        1710000050200
+      ),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-close', text: 'ปิด' },
+        timestamp: 1710000050300
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-price', text: 'ราคาช่าง 300-320' },
+        timestamp: 1710000050400
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-result-1', text: 'แจ้งผล 400' },
+        timestamp: 1710000050500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gno-builder-fallback', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-no-builder-fallback-result-2', text: 'แจ้งผล 400' },
+        timestamp: 1710000050600
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].fallbackNoBuilder, true);
+    assert.equal(wounds[0].requiredCredit, 1000);
+    assert.equal(wounds[0].settlementStatus, 'cancelled_no_builder_fallback');
+    assert.equal(wounds[0].winnerUserId, '');
+    assert.equal(wounds[0].loserUserId, '');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('UnoBuilderFallbackOpen').balance, 1000);
+    assert.equal(byUserId.get('UnoBuilderFallbackAccept').balance, 1000);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('settles number มา custom prices by range during no-builder rounds', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gnumber-ma');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UnumberMaOpen', 200, 'm-credit-number-ma-open', 1710000050700),
+      creditEvent('UnumberMaAccept', 200, 'm-credit-number-ma-accept', 1710000050701),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-number-ma-open-round', text: 'เปิด ตัวเลข ช่างไม่ตี' },
+        timestamp: 1710000050800
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'UnumberMaOpen' },
+        message: { type: 'text', id: 'm-number-ma-trade', text: '8-25 มา100 ช่างตียก' },
+        timestamp: 1710000050900
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'UnumberMaAccept' },
+        message: { type: 'text', id: 'm-number-ma-accept', quotedMessageId: 'm-number-ma-trade', text: 'ต' },
+        timestamp: 1710000051000
+      },
+      confirmPairEvent('Gnumber-ma', 'UnumberMaOpen', 'm-number-ma-accept', 'm-number-ma-confirm', 1710000051100),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-number-ma-close', text: 'ปิด' },
+        timestamp: 1710000051200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-number-ma-result-1', text: 'แจ้งผล 20' },
+        timestamp: 1710000051300
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-number-ma-result-2', text: 'แจ้งผล 20' },
+        timestamp: 1710000051400
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].openKeyword, 'มา');
+    assert.equal(wounds[0].priceRaw, '8-25');
+    assert.equal(wounds[0].fallbackNoBuilder, true);
+    assert.equal(wounds[0].requiredCredit, 200);
+    assert.equal(wounds[0].settlementStatus, 'settled');
+    assert.equal(wounds[0].winnerUserId, 'UnumberMaOpen');
+    assert.equal(wounds[0].loserUserId, 'UnumberMaAccept');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('UnumberMaOpen').balance, 295);
+    assert.equal(byUserId.get('UnumberMaAccept').balance, 100);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('rejects slash custom prices, old a prices, and ชตย stakes without reserve credit', async () => {
   const server = await startServer();
 

@@ -283,6 +283,15 @@ Open a queue round:
 เปิด น้องเหมียว ช่างไม่ตี
 ```
 
+If the group announces no builder during the current round, a registered admin can send:
+
+```text
+ช่างไม่ตี
+ช่างบ่ตี @All
+```
+
+The bot replies with the no-builder play rules, marks the latest unfinished round as no builder, and clears the builder price until an admin sends `ราคาช่าง ...`.
+
 Close the current queue round:
 
 ```text
@@ -332,6 +341,7 @@ Accepted reply keywords:
 
 ```text
 ต, ติด, ครับ, เค, จ้า
+ชตย, ช่างตีไม่ติด, ช่างตียก
 ```
 
 Examples:
@@ -347,12 +357,14 @@ Examples:
 400ถ100
 345-385ล500 ชตย
 360-390ถ ชตย
+8-25 มา2000 ช่างตียก
 ```
 
-Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
+Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `มา`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
 Use `-` for ranges only, for example `300-340ล500`; `/` is not accepted.
-`ชตย` means `ช่างไม่ต่อย` and can be placed after the custom price.
-If a custom price has a stake and `ชตย`, the user must have reserve credit for 2x the stake, for example `330-350ล1000ชตย` requires 2000 available credit.
+`ชตย`, `ช่างตีไม่ติด`, and `ช่างตียก` are no-builder fallback markers. They can be placed after a custom price or used as the accepter reply keyword.
+If a custom price has a stake and a no-builder fallback marker, the user must have reserve credit for 2x the stake, for example `330-350ล1000ชตย` requires 2000 available credit.
+If the admin later sets a builder price for that round, marked wounds are automatically cancelled and no credit is deducted.
 
 Pairing flow:
 
@@ -370,6 +382,7 @@ The card includes `แตะเพื่อยกเลิก`. If one user taps
 Settlement rules:
 - `ชล`, `ล`, `ไล่`, and `ช่างไล่` are `ทายชนะ`.
 - `ชย`, `ชถ`, `ย`, `ถ`, `ถอย`, `ยั่ง`, `ช่างยั่ง`, and `ช่างถอย` are `ทายแพ้`.
+- `มา` means the opener predicts the result will be inside the custom range, for example `8-25 มา2000`.
 - `ทายแพ้` means the user predicts the result will be lower than the builder price. It is not the losing status. If that prediction is correct, that user receives the payout.
 - The play rate is 1:1. The payout is 0.95 of the stake, and 5% is kept by the admin/system.
 - If the result is inside the builder price range, the wound is a draw and both sides keep their credit.

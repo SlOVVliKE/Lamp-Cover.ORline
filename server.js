@@ -406,6 +406,7 @@ const CUSTOM_PRICE_KEYWORDS = [
   { keyword: 'ไล่', side: 'chang_dai' },
   { keyword: 'ถอย', side: 'chang_yang' },
   { keyword: 'ยั่ง', side: 'chang_yang' },
+  { keyword: 'มา', side: 'number_ma' },
   { keyword: 'ชล', side: 'chang_dai' },
   { keyword: 'ชย', side: 'chang_yang' },
   { keyword: 'ชถ', side: 'chang_yang' },
@@ -436,9 +437,32 @@ function buildTradeKeywords() {
 
 const TRADE_KEYWORDS = buildTradeKeywords();
 const CUSTOM_PRICE_KEYWORD_PATTERN = CUSTOM_PRICE_KEYWORDS.map((item) => escapeRegExp(item.keyword)).join('|');
+const NO_BUILDER_FALLBACK_MARKERS = ['ชตย', 'ช่างตีไม่ติด', 'ช่างตียก'];
+const NO_BUILDER_FALLBACK_MARKER_PATTERN = NO_BUILDER_FALLBACK_MARKERS
+  .map((marker) => escapeRegExp(marker))
+  .join('|');
 
 function normalizeMessageText(message) {
   return String(message || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseNoBuilderFallbackMarker(message) {
+  const text = normalizeMessageText(message);
+  return NO_BUILDER_FALLBACK_MARKERS.find((marker) => marker === text) || '';
+}
+
+function isNoBuilderFallbackMarker(message) {
+  return Boolean(parseNoBuilderFallbackMarker(message));
+}
+
+function withNoBuilderFallback(trade, fallbackNoBuilder) {
+  if (!trade || !fallbackNoBuilder) return trade;
+
+  return {
+    ...trade,
+    fallbackNoBuilder: true,
+    noBuilderPrice: true
+  };
 }
 
 function parseTradeMessage(message) {
@@ -459,7 +483,7 @@ function parseTradeMessage(message) {
     }
   }
 
-  const customPriceMatch = text.match(new RegExp(`^(\\d+(?:-\\d+)*?)\\s*(${CUSTOM_PRICE_KEYWORD_PATTERN})\\s*(\\d*)\\s*(ชตย)?$`, 'i'));
+  const customPriceMatch = text.match(new RegExp(`^(\\d+(?:-\\d+)*?)\\s*(${CUSTOM_PRICE_KEYWORD_PATTERN})\\s*(\\d*)\\s*(${NO_BUILDER_FALLBACK_MARKER_PATTERN})?$`, 'i'));
   if (customPriceMatch) {
     const keyword = customPriceMatch[2];
     const keywordEntry = CUSTOM_PRICE_KEYWORDS.find((item) => item.keyword === keyword);
@@ -484,7 +508,8 @@ function parseTradeMessage(message) {
 
 function parseAcceptMessage(message) {
   const text = normalizeMessageText(message);
-  return ACCEPT_KEYWORDS.includes(text) ? text : null;
+  if (ACCEPT_KEYWORDS.includes(text)) return text;
+  return parseNoBuilderFallbackMarker(text) || null;
 }
 
 function parseResultCommand(message) {
@@ -646,6 +671,21 @@ function parseBuilderPriceCommand(message) {
 
 function parseBehindHouseCommand(message) {
   return normalizeMessageText(message) === 'หลังบ้าน';
+}
+
+function parseNoBuilderAnnouncementCommand(message) {
+  const text = normalizeMessageText(message);
+  return /(^|\s)ช่าง(?:ไม่|บ่)ตี(?:\s|$|@)/.test(text);
+}
+
+function buildNoBuilderAnnouncementReply() {
+  return [
+    'ประกาศฯ กรณีทางกลุ่มประกาศช่างไม่ตี',
+    '⛔',
+    '👉คนที่เล่นช่างไว้ถ้าจะเล่นตัวเลขแล้วกลัวช่างตีตอนท้าย',
+    '👉ให้พิมพ์หลังแผลที่เรียกว่า "ช่างตีไม่ติด" หรือ "ช่างตียก"',
+    '👉หากช่างตีแล้วแผลนั้นจะยกเลิกให้อัตโนมัติ❌'
+  ].join('\n');
 }
 
 function getLatestRoundForGroup(groupId) {
@@ -1028,10 +1068,25 @@ function getPredictionLabels(side) {
     };
   }
 
+  if (side === 'number_ma') {
+    return {
+      openerPrediction: 'ทายมา',
+      accepterPrediction: 'ทายไม่มา'
+    };
+  }
+
   return {
     openerPrediction: '',
     accepterPrediction: ''
   };
+}
+
+function getNumberMaWinningSide(result, price) {
+  if (!isNumericResult(result) || !price) return '';
+
+  const resultNumber = Number(result);
+  if (!Number.isFinite(resultNumber)) return '';
+  return resultNumber >= price.low && resultNumber <= price.high ? 'number_ma' : 'number_not_ma';
 }
 
 function getSettlementPriceForWound(wound, round) {
@@ -1049,8 +1104,14 @@ function getWinningSide(result, price) {
 }
 
 function buildWoundSettlement(wound, result, round) {
-  const price = getSettlementPriceForWound(wound, round);
-  const winningSide = getWinningSide(result, price);
+  const builderPrice = getRoundPrice(round);
+  const cancelsByBuilderHit = Boolean(wound?.fallbackNoBuilder && builderPrice);
+  const price = cancelsByBuilderHit ? builderPrice : getSettlementPriceForWound(wound, round);
+  const winningSide = cancelsByBuilderHit
+    ? ''
+    : wound?.side === 'number_ma'
+      ? getNumberMaWinningSide(result, price)
+      : getWinningSide(result, price);
   const stakeAmount = roundPoints(getWoundAmount(wound));
   const baseSettlement = {
     priceRawUsed: price?.raw || '',
@@ -1063,6 +1124,13 @@ function buildWoundSettlement(wound, result, round) {
     winnerPayoutAmount: 0,
     systemFeeAmount: 0
   };
+
+  if (cancelsByBuilderHit) {
+    return {
+      ...baseSettlement,
+      settlementStatus: 'cancelled_no_builder_fallback'
+    };
+  }
 
   if (!winningSide) {
     return {
@@ -1371,9 +1439,11 @@ function buildPairSuccessFlex(wound, viewerUserId) {
   const accepterName = normalizeDisplayName(wound.accepterDisplayName) || 'ผู้รับ';
   const openerPrediction = wound.openerPrediction || '-';
   const accepterPrediction = wound.accepterPrediction || '-';
+  const openerPredictionColor = ['ทายชนะ', 'ทายมา'].includes(openerPrediction) ? '#22C55E' : '#EF4444';
+  const accepterPredictionColor = ['ทายชนะ', 'ทายมา'].includes(accepterPrediction) ? '#22C55E' : '#EF4444';
   const rows = [
-    flexRow(openerName, openerPrediction, openerPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
-    flexRow(accepterName, accepterPrediction, accepterPrediction === 'ทายชนะ' ? '#22C55E' : '#EF4444'),
+    flexRow(openerName, openerPrediction, openerPredictionColor),
+    flexRow(accepterName, accepterPrediction, accepterPredictionColor),
     {
       type: 'separator',
       margin: 'sm'
@@ -1420,6 +1490,17 @@ function getWoundOpponentName(wound, userId) {
 
 function getViewerSettlement(wound, viewerUserId) {
   const stakeAmount = roundPoints(wound.stakeAmount || getWoundAmount(wound));
+
+  if (wound.settlementStatus === 'cancelled_no_builder_fallback') {
+    return {
+      label: 'ยกเลิก',
+      amount: 0,
+      color: '#EF4444',
+      icon: '❌',
+      title: `❌ ยกเลิกแผล "${wound.roundName || '-'}"`,
+      detail: 'ช่างตีแล้ว แผลนี้ยกเลิกอัตโนมัติ'
+    };
+  }
 
   if (wound.settlementStatus === 'draw') {
     return {
@@ -1525,7 +1606,13 @@ function buildWoundResultFlex(wound, viewerUserId) {
       title: settlement.title,
       titleColor: settlement.color,
       bodyColor: settlement.color,
-      subtitle: settlement.amount < 0 ? 'คุณเสียเครดิต' : settlement.amount > 0 ? 'คุณได้รับเครดิต' : 'เสมอ',
+      subtitle: settlement.label === 'ยกเลิก'
+        ? 'ช่างตี แผลยกเลิก'
+        : settlement.amount < 0
+          ? 'คุณเสียเครดิต'
+          : settlement.amount > 0
+            ? 'คุณได้รับเครดิต'
+            : 'เสมอ',
       amount: formatSignedPoints(settlement.amount),
       rows,
       footer: ''
@@ -2175,6 +2262,7 @@ function trackGroupMessage(event) {
   const quotedMessageId = event.message.quotedMessageId || '';
   const quotedMessage = findTrackedMessage(quotedMessageId);
   const acceptKeyword = parseAcceptMessage(messageText);
+  const acceptFallbackNoBuilder = isNoBuilderFallbackMarker(acceptKeyword);
   const pairIntent =
     acceptKeyword &&
     quotedMessage?.trade &&
@@ -2189,7 +2277,10 @@ function trackGroupMessage(event) {
           accepterDisplayName: getEventDisplayName(event),
           roundId: openRound.id,
           groupId: source.groupId || '',
-          requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade)
+          requiredCredit: getRequiredCreditFromTrade(
+            withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder)
+          ),
+          fallbackNoBuilder: acceptFallbackNoBuilder
         }
       : null;
   const messageEntry = {
@@ -2318,6 +2409,8 @@ async function createWoundFromReply(event) {
 
   if (quotedMessage.trade) {
     if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
+    const acceptFallbackNoBuilder = isNoBuilderFallbackMarker(acceptKeyword);
+    const tradeForCredit = withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder);
 
     const existingWoundForTrade = wounds.find(
       (wound) =>
@@ -2334,7 +2427,7 @@ async function createWoundFromReply(event) {
         openMessageId: quotedMessage.id,
         openerUserId: quotedMessage.userId,
         accepterUserId: source.userId || '',
-        requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade),
+        requiredCredit: getRequiredCreditFromTrade(tradeForCredit),
         existingWoundId: existingWoundForTrade.id
       };
     }
@@ -2344,7 +2437,8 @@ async function createWoundFromReply(event) {
       openMessageId: quotedMessage.id,
       openerUserId: quotedMessage.userId,
       accepterUserId: source.userId || '',
-      requiredCredit: getRequiredCreditFromTrade(quotedMessage.trade)
+      requiredCredit: getRequiredCreditFromTrade(tradeForCredit),
+      fallbackNoBuilder: acceptFallbackNoBuilder
     };
   }
 
@@ -2357,6 +2451,13 @@ async function createWoundFromReply(event) {
   const tradeMessage = findTrackedMessage(pairIntent.openMessageId);
   if (!tradeMessage?.trade) return null;
   if (tradeMessage.groupId !== source.groupId || tradeMessage.roundId !== openRound.id) return null;
+  const fallbackNoBuilder = Boolean(
+    tradeMessage.trade.fallbackNoBuilder ||
+      pairIntent.fallbackNoBuilder ||
+      isNoBuilderFallbackMarker(quotedMessage.acceptKeyword || quotedMessage.text) ||
+      isNoBuilderFallbackMarker(acceptKeyword)
+  );
+  const tradeForWound = withNoBuilderFallback(tradeMessage.trade, fallbackNoBuilder);
 
   const existingWoundForTrade = wounds.find(
     (wound) =>
@@ -2373,12 +2474,12 @@ async function createWoundFromReply(event) {
       openMessageId: tradeMessage.id,
       openerUserId: tradeMessage.userId,
       accepterUserId: pairIntent.accepterUserId,
-      requiredCredit: getRequiredCreditFromTrade(tradeMessage.trade),
+      requiredCredit: getRequiredCreditFromTrade(tradeForWound),
       existingWoundId: existingWoundForTrade.id
     };
   }
 
-  const requiredCredit = getRequiredCreditFromTrade(tradeMessage.trade);
+  const requiredCredit = getRequiredCreditFromTrade(tradeForWound);
   const openerSnapshot = getCreditSnapshot(tradeMessage.userId);
   const accepterSnapshot = getCreditSnapshot(pairIntent.accepterUserId);
   const insufficientCreditUsers = [];
@@ -2405,7 +2506,7 @@ async function createWoundFromReply(event) {
     };
   }
 
-  const predictionLabels = getPredictionLabels(tradeMessage.trade.side);
+  const predictionLabels = getPredictionLabels(tradeForWound.side);
   const [openerDisplayName, accepterDisplayName] = await Promise.all([
     resolveGroupMemberDisplayName(source.groupId, tradeMessage.userId, tradeMessage),
     resolveGroupMemberDisplayName(source.groupId, pairIntent.accepterUserId, quotedMessage)
@@ -2427,19 +2528,19 @@ async function createWoundFromReply(event) {
     openText: tradeMessage.text,
     acceptText: quotedMessage.text,
     confirmText: getMessageText(event),
-    openKeyword: tradeMessage.trade.keyword,
+    openKeyword: tradeForWound.keyword,
     acceptKeyword: quotedMessage.acceptKeyword || quotedMessage.text,
     confirmKeyword: acceptKeyword,
-    side: tradeMessage.trade.side,
+    side: tradeForWound.side,
     openerPrediction: predictionLabels.openerPrediction,
     accepterPrediction: predictionLabels.accepterPrediction,
-    amount: tradeMessage.trade.amount,
+    amount: tradeForWound.amount,
     requiredCredit,
-    priceRaw: tradeMessage.trade.priceRaw || '',
+    priceRaw: tradeForWound.priceRaw || '',
     openingPriceRaw: openRound.priceRaw || '',
-    customPrice: Boolean(tradeMessage.trade.customPrice),
-    fallbackNoBuilder: Boolean(tradeMessage.trade.fallbackNoBuilder),
-    noBuilderPrice: Boolean(tradeMessage.trade.noBuilderPrice),
+    customPrice: Boolean(tradeForWound.customPrice),
+    fallbackNoBuilder,
+    noBuilderPrice: Boolean(tradeForWound.noBuilderPrice),
     openingNoBuilderPrice: Boolean(openRound.noBuilderPrice),
     openerAvailableBefore: openerSnapshot.withdrawableBalance,
     accepterAvailableBefore: accepterSnapshot.withdrawableBalance,
@@ -2751,6 +2852,30 @@ function handleQueueAdminCommand(event) {
       type: 'round_opened',
       round,
       replyTexts: [buildOpenReply(round)]
+    };
+  }
+
+  if (parseNoBuilderAnnouncementCommand(messageText)) {
+    const latestRound = getLatestRoundForGroup(source.groupId);
+    let updatedRound = latestRound || null;
+
+    if (latestRound && latestRound.status !== 'resulted') {
+      updatedRound = {
+        ...latestRound,
+        ...getPriceFields(null),
+        noBuilderPrice: true,
+        noBuilderAnnouncedByUserId: source.userId || '',
+        noBuilderAnnouncedMessageId: event.message.id || '',
+        noBuilderAnnouncedTimestamp: nowTimestamp,
+        noBuilderAnnouncedTime: formatDate(nowTimestamp)
+      };
+      upsertRound(updatedRound);
+    }
+
+    return {
+      type: 'no_builder_announced',
+      round: updatedRound,
+      replyTexts: [buildNoBuilderAnnouncementReply()]
     };
   }
 
