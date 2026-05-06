@@ -2082,6 +2082,37 @@ test('sends behind house payment text and profile card in one LINE reply call', 
   assert.match(behindHouseBlock, /behindHouseAction\.replyMessages/);
 });
 
+test('replies with payment account details from private account keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+
+    await postWebhook(server.baseUrl, ['บช', 'เลข', 'เลขบัญชี', 'บัญชี', 'ลบช'].map((text, index) => ({
+      type: 'message',
+      source: { type: 'user', userId: `Uaccount${index}` },
+      replyToken: `reply-account-${index}`,
+      message: { type: 'text', id: `m-account-${index}`, text },
+      timestamp: 1710000082000 + index
+    })));
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const accountLogs = logs.filter((log) => log.creditAction === 'payment_account');
+
+    assert.equal(accountLogs.length, 5);
+
+    for (const log of accountLogs) {
+      assert.equal(log.creditReplyMessages.length, 1);
+      assert.match(log.creditReplyMessages[0], /ช่องทางชำระเงิน/);
+      assert.match(log.creditReplyMessages[0], /9160581964 กรุงเทพ/);
+      assert.match(log.creditReplyMessages[0], /ภาณุเดช กุมแก้ว/);
+      assert.match(log.creditReplyMessages[0], /บัญชีนี้เท่านั้น/);
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
 test('ignores private chat C+ credit commands because credit requires a verified slip', async () => {
   const server = await startServer();
 

@@ -248,6 +248,16 @@ When someone sends this keyword in a group:
 
 The bot replies with payment account details and the LINE OA profile card. You can change the payment account with:
 
+In a private chat with the LINE OA, users can also request the payment account by sending one of:
+
+```text
+บช
+เลข
+เลขบัญชี
+บัญชี
+ลบช
+```
+
 ```text
 PAYMENT_ACCOUNT_NUMBER=9160581964
 PAYMENT_ACCOUNT_BANK=กรุงเทพ

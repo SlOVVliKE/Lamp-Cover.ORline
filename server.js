@@ -866,6 +866,11 @@ function parseCreditKeyword(message) {
   return null;
 }
 
+function parsePaymentAccountKeyword(message) {
+  const text = normalizeMessageText(message).replace(/\s+/g, '');
+  return ['บช', 'เลข', 'เลขบัญชี', 'บัญชี', 'ลบช', 'เลขบช'].includes(text);
+}
+
 function roundPoints(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
@@ -1651,6 +1656,13 @@ function handleCreditEvent(event) {
 
   if (source.type !== 'user') {
     return null;
+  }
+
+  if (parsePaymentAccountKeyword(messageText)) {
+    return {
+      type: 'payment_account',
+      replyMessages: [buildBehindHousePaymentText()]
+    };
   }
 
   const keyword = parseCreditKeyword(messageText);
