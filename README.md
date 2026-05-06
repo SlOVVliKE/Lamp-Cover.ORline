@@ -90,6 +90,9 @@ LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
 LINE_OFFICIAL_ACCOUNT_URL=https://line.me/R/ti/p/your_line_oa_id
 LINE_OFFICIAL_ACCOUNT_NAME=Lamp cover.OR
 LINE_OFFICIAL_ACCOUNT_IMAGE_URL=
+EASYSLIP_API_KEY=your_easyslip_api_key
+EASYSLIP_MATCH_ACCOUNT=false
+EASYSLIP_CHECK_DUPLICATE=true
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:
@@ -177,6 +180,34 @@ In a group chat, the app creates an active wound only while a queue round is ope
 LINE sends the quoted message ID as `message.quotedMessageId`, so the original message must already have been received by the webhook.
 
 The bot can reply to group commands when `LINE_CHANNEL_ACCESS_TOKEN` is set.
+
+## EasySlip Slip Credit
+
+To let users top up credit by sending a bank slip image in a private chat with the LINE OA, set these Environment Variables on Render:
+
+```text
+LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
+EASYSLIP_API_KEY=your_easyslip_api_key
+EASYSLIP_CHECK_DUPLICATE=true
+```
+
+Flow:
+
+```text
+User sends slip image in private chat
+Bot downloads the image from LINE
+Bot sends Base64 to EasySlip POST /verify/bank
+Bot checks duplicate status and slip transRef
+Bot adds credit equal to the verified slip amount
+```
+
+Optional account matching:
+
+```text
+EASYSLIP_MATCH_ACCOUNT=true
+```
+
+Enable this only after registering your receiver bank account inside EasySlip.
 
 Save a queue list by sending a multi-line admin message in the group:
 

@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
@@ -27,7 +28,21 @@ async function waitForServer(baseUrl) {
   throw new Error('Server did not start in time');
 }
 
-async function startServer() {
+async function startHttpMock(handler) {
+  const server = http.createServer(handler);
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    async stop() {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  };
+}
+
+async function startServer(envOverrides = {}) {
   const port = nextPort++;
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server.js'], {
@@ -37,7 +52,8 @@ async function startServer() {
       PORT: String(port),
       LINE_CHANNEL_SECRET: '',
       LINE_OFFICIAL_ACCOUNT_URL: 'https://line.me/R/ti/p/@lamp-cover',
-      ADMIN_KEYWORD: 'I AM ADMIN'
+      ADMIN_KEYWORD: 'I AM ADMIN',
+      ...envOverrides
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -152,6 +168,16 @@ function collectFlexActions(value, actions = []) {
   }
 
   return actions;
+}
+
+async function readRequestJson(req) {
+  let rawBody = '';
+
+  for await (const chunk of req) {
+    rawBody += chunk.toString();
+  }
+
+  return rawBody ? JSON.parse(rawBody) : {};
 }
 
 test('creates an active wound after the opener confirms an accept reply', async () => {
@@ -1819,6 +1845,121 @@ test('adds private chat credit from C+ commands', async () => {
     assert.equal(logs.filter((log) => log.creditAction === 'credit_added').length, 2);
   } finally {
     await server.stop();
+  }
+});
+
+test('adds private chat credit from EasySlip verified image slips and rejects duplicates', async () => {
+  const slipImage = Buffer.from('fake-slip-image');
+  const easySlipRequests = [];
+  const lineContentRequests = [];
+  let easySlipCallCount = 0;
+
+  const lineContentServer = await startHttpMock((req, res) => {
+    lineContentRequests.push({
+      url: req.url,
+      authorization: req.headers.authorization
+    });
+
+    res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+    res.end(slipImage);
+  });
+
+  const easySlipServer = await startHttpMock(async (req, res) => {
+    const body = await readRequestJson(req);
+    easySlipCallCount += 1;
+    easySlipRequests.push({
+      url: req.url,
+      authorization: req.headers.authorization,
+      body
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        success: true,
+        status: 200,
+        data: {
+          isDuplicate: easySlipCallCount > 1,
+          transRef: 'BBL-TRX-001',
+          rawSlip: {
+            transRef: 'BBL-TRX-001',
+            amount: {
+              amount: 1250
+            },
+            receiver: {
+              bank: {
+                short: 'BBL'
+              },
+              account: {
+                value: '1234567890'
+              }
+            }
+          }
+        }
+      })
+    );
+  });
+
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_CONTENT_API_BASE_URL: lineContentServer.baseUrl,
+    EASYSLIP_API_KEY: 'easy-token',
+    EASYSLIP_API_BASE_URL: easySlipServer.baseUrl
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UslipCredit' },
+        replyToken: 'reply-slip-ok',
+        message: { type: 'image', id: 'm-slip-ok' },
+        timestamp: 1710000003000
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UslipCredit' },
+        replyToken: 'reply-slip-duplicate',
+        message: { type: 'image', id: 'm-slip-duplicate' },
+        timestamp: 1710000004000
+      }
+    ]);
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const credit = credits.find((row) => row.userId === 'UslipCredit');
+    assert.equal(credit.balance, 1250);
+    assert.equal(credit.totalAdded, 1250);
+    assert.equal(credit.transactions.length, 1);
+    assert.equal(credit.transactions[0].type, 'slip_credit_added');
+    assert.equal(credit.transactions[0].slipTransRef, 'BBL-TRX-001');
+
+    assert.equal(lineContentRequests.length, 2);
+    assert.match(lineContentRequests[0].url, /\/v2\/bot\/message\/m-slip-ok\/content$/);
+    assert.equal(lineContentRequests[0].authorization, 'Bearer line-token');
+    assert.equal(easySlipRequests.length, 2);
+    assert.equal(easySlipRequests[0].url, '/verify/bank');
+    assert.equal(easySlipRequests[0].authorization, 'Bearer easy-token');
+    assert.equal(easySlipRequests[0].body.checkDuplicate, true);
+    assert.match(easySlipRequests[0].body.base64, /^data:image\/jpeg;base64,/);
+    assert.equal(easySlipRequests[0].body.base64.includes(slipImage.toString('base64')), true);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const successLog = logs.find((log) => log.creditAction === 'slip_credit_added');
+    const duplicateLog = logs.find((log) => log.creditAction === 'slip_duplicate');
+    const successTexts = collectFlexTexts(successLog.creditReplyMessages).join('\n');
+    const duplicateTexts = collectFlexTexts(duplicateLog.creditReplyMessages).join('\n');
+
+    assert.equal(successLog.slipTransRef, 'BBL-TRX-001');
+    assert.equal(successLog.creditAmount, 1250);
+    assert.match(successTexts, /1,250\.00/);
+    assert.match(duplicateTexts, /สลิปนี้ถูกใช้แล้ว/);
+  } finally {
+    await server.stop();
+    await lineContentServer.stop();
+    await easySlipServer.stop();
   }
 });
 

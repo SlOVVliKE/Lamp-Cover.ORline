@@ -9,9 +9,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+const LINE_CONTENT_API_BASE_URL = process.env.LINE_CONTENT_API_BASE_URL || 'https://api-data.line.me';
 const LINE_OFFICIAL_ACCOUNT_URL = process.env.LINE_OFFICIAL_ACCOUNT_URL || process.env.LINE_OA_URL || '';
 const LINE_OFFICIAL_ACCOUNT_NAME = process.env.LINE_OFFICIAL_ACCOUNT_NAME || 'Lamp cover.OR';
 const LINE_OFFICIAL_ACCOUNT_IMAGE_URL = process.env.LINE_OFFICIAL_ACCOUNT_IMAGE_URL || '';
+const EASYSLIP_API_KEY = process.env.EASYSLIP_API_KEY || '';
+const EASYSLIP_API_BASE_URL = process.env.EASYSLIP_API_BASE_URL || 'https://api.easyslip.com/v2';
+const EASYSLIP_MATCH_ACCOUNT = process.env.EASYSLIP_MATCH_ACCOUNT === 'true';
+const EASYSLIP_CHECK_DUPLICATE = process.env.EASYSLIP_CHECK_DUPLICATE !== 'false';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
@@ -748,7 +753,7 @@ function findCreditByUserId(userId) {
   };
 }
 
-function addCreditForUser(event, totalAmount, rawText) {
+function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
   const source = event.source || {};
   const nowTimestamp = event.timestamp || Date.now();
   const credits = readCredits();
@@ -767,7 +772,8 @@ function addCreditForUser(event, totalAmount, rawText) {
     messageId: event.message?.id || '',
     balanceAfter: nextBalance,
     timestamp: nowTimestamp,
-    time: formatDate(nowTimestamp)
+    time: formatDate(nowTimestamp),
+    ...transactionFields
   };
   const updatedCredit = {
     ...existing,
@@ -818,6 +824,28 @@ function getCreditSnapshot(userId) {
     activeWoundAmount,
     withdrawableBalance
   };
+}
+
+function isSlipTransRefUsed(transRef) {
+  if (!transRef) return false;
+  return readCredits().some((credit) =>
+    (credit.transactions || []).some((transaction) => transaction.slipTransRef === transRef)
+  );
+}
+
+function getSlipTransRef(slipData) {
+  return String(slipData?.rawSlip?.transRef || slipData?.transRef || '').trim();
+}
+
+function getSlipAmount(slipData) {
+  const amount = Number(
+    slipData?.rawSlip?.amount?.amount ??
+      slipData?.amount?.amount ??
+      slipData?.amount ??
+      0
+  );
+
+  return Number.isFinite(amount) && amount > 0 ? roundPoints(amount) : 0;
 }
 
 function getRequiredCreditFromTrade(trade) {
@@ -1086,6 +1114,13 @@ function buildCreditAddedFlex(amount, snapshot) {
       ],
       footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
     })
+  };
+}
+
+function buildSlipStatusText(text) {
+  return {
+    type: 'text',
+    text
   };
 }
 
@@ -1448,6 +1483,83 @@ function handleCreditEvent(event) {
   };
 }
 
+async function handleSlipCreditEvent(event) {
+  if (event.type !== 'message' || event.message?.type !== 'image' || event.source?.type !== 'user' || !event.source?.userId) {
+    return null;
+  }
+
+  if (!event.message?.id) {
+    return {
+      type: 'slip_error',
+      replyMessages: [buildSlipStatusText('ไม่พบรหัสรูปสลิป กรุณาส่งรูปสลิปใหม่อีกครั้ง')]
+    };
+  }
+
+  try {
+    const imageContent = await downloadLineMessageContent(event.message.id);
+    const slipData = await verifyBankSlipWithEasySlip(imageContent, event);
+    const slipTransRef = getSlipTransRef(slipData);
+    const amount = getSlipAmount(slipData);
+
+    if (slipData?.isDuplicate || isSlipTransRefUsed(slipTransRef)) {
+      return {
+        type: 'slip_duplicate',
+        slipTransRef,
+        replyMessages: [buildSlipStatusText('สลิปนี้ถูกใช้แล้ว ไม่สามารถเติมเครดิตซ้ำได้')]
+      };
+    }
+
+    if (!slipTransRef) {
+      return {
+        type: 'slip_error',
+        replyMessages: [buildSlipStatusText('ตรวจสลิปได้ แต่ไม่พบเลขอ้างอิง กรุณาส่งสลิปใหม่')]
+      };
+    }
+
+    if (!amount) {
+      return {
+        type: 'slip_error',
+        slipTransRef,
+        replyMessages: [buildSlipStatusText('ตรวจสลิปได้ แต่ไม่พบยอดเงิน กรุณาส่งสลิปใหม่')]
+      };
+    }
+
+    const result = addCreditForUser(event, amount, 'EasySlip verified bank slip', {
+      id: `${slipTransRef}:slip`,
+      type: 'slip_credit_added',
+      slipProvider: 'EasySlip',
+      slipTransRef,
+      slipDuplicate: false,
+      slipSenderBank: slipData?.rawSlip?.sender?.bank?.short || slipData?.sender?.bank?.short || '',
+      slipReceiverBank: slipData?.rawSlip?.receiver?.bank?.short || slipData?.receiver?.bank?.short || ''
+    });
+    const snapshot = getCreditSnapshot(event.source.userId);
+
+    return {
+      type: 'slip_credit_added',
+      amount,
+      creditBalance: result.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      activeWoundCount: snapshot.activeWounds.length,
+      slipTransRef,
+      slipReceiverBank: slipData?.rawSlip?.receiver?.bank?.short || slipData?.receiver?.bank?.short || '',
+      replyMessages: [buildCreditAddedFlex(amount, snapshot)]
+    };
+  } catch (error) {
+    const message =
+      error.code === 'SLIP_PENDING'
+        ? 'สลิปธนาคารกรุงเทพอาจยังตรวจไม่ได้ กรุณารอสักครู่แล้วส่งใหม่อีกครั้ง'
+        : `ตรวจสลิปไม่สำเร็จ: ${error.message}`;
+
+    return {
+      type: 'slip_error',
+      slipErrorCode: error.code || '',
+      replyMessages: [buildSlipStatusText(message)]
+    };
+  }
+}
+
 async function replyToLine(replyToken, messages) {
   if (!LINE_CHANNEL_ACCESS_TOKEN || !replyToken || messages.length === 0) {
     return null;
@@ -1496,6 +1608,71 @@ async function pushToLine(to, messages) {
   }
 
   return response;
+}
+
+async function downloadLineMessageContent(messageId) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN) {
+    throw new Error('LINE_CHANNEL_ACCESS_TOKEN is not set');
+  }
+
+  const baseUrl = LINE_CONTENT_API_BASE_URL.replace(/\/+$/, '');
+  const response = await fetch(`${baseUrl}/v2/bot/message/${encodeURIComponent(messageId)}/content`, {
+    headers: {
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`LINE content download failed: ${response.status} ${errorText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || 'image/jpeg';
+  const arrayBuffer = await response.arrayBuffer();
+
+  return {
+    contentType,
+    buffer: Buffer.from(arrayBuffer)
+  };
+}
+
+async function verifyBankSlipWithEasySlip(imageContent, event) {
+  if (!EASYSLIP_API_KEY) {
+    throw new Error('EASYSLIP_API_KEY is not set');
+  }
+
+  const baseUrl = EASYSLIP_API_BASE_URL.replace(/\/+$/, '');
+  const base64 = `data:${imageContent.contentType};base64,${imageContent.buffer.toString('base64')}`;
+  const body = {
+    base64,
+    checkDuplicate: EASYSLIP_CHECK_DUPLICATE,
+    remark: `LINE ${event.source?.userId || '-'} ${event.message?.id || '-'}`
+  };
+
+  if (EASYSLIP_MATCH_ACCOUNT) {
+    body.matchAccount = true;
+  }
+
+  const response = await fetch(`${baseUrl}/verify/bank`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${EASYSLIP_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  const result = await response.json().catch(() => null);
+
+  if (!response.ok || !result?.success) {
+    const error = result?.error || {};
+    const message = error.message || result?.message || `EasySlip verify failed: ${response.status}`;
+    const verifyError = new Error(message);
+    verifyError.code = error.code || '';
+    verifyError.status = response.status;
+    throw verifyError;
+  }
+
+  return result.data;
 }
 
 async function getLineGroupMemberProfile(groupId, userId) {
@@ -2547,7 +2724,8 @@ app.post(
           const woundAction = await createWoundFromReply(event);
           const woundCancelAction = await handleWoundCancelPostback(event);
           const unsendAction = await handleUnsendEvent(event);
-          const creditAction = handleCreditEvent(event);
+          const slipCreditAction = await handleSlipCreditEvent(event);
+          const creditAction = slipCreditAction || handleCreditEvent(event);
 
           if (adminEntry) {
             logEntry.adminRegistered = true;
@@ -2713,6 +2891,9 @@ app.post(
             logEntry.activeWoundAmount = creditAction.activeWoundAmount;
             logEntry.activeWoundCount = creditAction.activeWoundCount || 0;
             logEntry.withdrawableBalance = creditAction.withdrawableBalance;
+            logEntry.slipTransRef = creditAction.slipTransRef || '';
+            logEntry.slipReceiverBank = creditAction.slipReceiverBank || '';
+            logEntry.slipErrorCode = creditAction.slipErrorCode || '';
             logEntry.creditReplyMessages = Array.isArray(creditAction.replyMessages) ? creditAction.replyMessages : [];
 
             if (Array.isArray(creditAction.replyMessages) && creditAction.replyMessages.length > 0) {
