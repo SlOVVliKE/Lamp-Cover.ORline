@@ -20,6 +20,9 @@ const EASYSLIP_MATCH_ACCOUNT = process.env.EASYSLIP_MATCH_ACCOUNT === 'true';
 const EASYSLIP_CHECK_DUPLICATE = process.env.EASYSLIP_CHECK_DUPLICATE !== 'false';
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'lamp_cover';
+const PAYMENT_ACCOUNT_NUMBER = process.env.PAYMENT_ACCOUNT_NUMBER || '9160581964';
+const PAYMENT_ACCOUNT_BANK = process.env.PAYMENT_ACCOUNT_BANK || 'กรุงเทพ';
+const PAYMENT_ACCOUNT_NAME = process.env.PAYMENT_ACCOUNT_NAME || 'ภาณุเดช กุมแก้ว';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
@@ -2127,6 +2130,20 @@ function buildBehindHouseFlex(link) {
   };
 }
 
+function buildBehindHousePaymentText() {
+  return [
+    '🟠🟠ช่องทางชำระเงิน🟠🟠',
+    '',
+    `${PAYMENT_ACCOUNT_NUMBER} ${PAYMENT_ACCOUNT_BANK}`,
+    PAYMENT_ACCOUNT_NAME,
+    '',
+    '********************',
+    '**ก่อนโอนเช็คชื่อบัญชีดีๆนะครับ🙏',
+    '',
+    '✅บัญชีนี้เท่านั้น✅'
+  ].join('\n');
+}
+
 function handleBehindHouseCommand(event) {
   if (!isGroupTextMessage(event) || !parseBehindHouseCommand(getMessageText(event))) {
     return null;
@@ -2142,7 +2159,7 @@ function handleBehindHouseCommand(event) {
 
   return {
     link: LINE_OFFICIAL_ACCOUNT_URL,
-    replyTexts: [],
+    replyTexts: [buildBehindHousePaymentText()],
     replyMessages: [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)]
   };
 }

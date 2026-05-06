@@ -1787,7 +1787,11 @@ test('replies with a LINE OA profile card when a group member asks for หลั
     const linkLog = logs.find((log) => log.behindHouseRequested);
 
     assert.equal(linkLog.behindHouseLink, 'https://line.me/R/ti/p/@lamp-cover');
-    assert.deepEqual(linkLog.behindHouseReplyTexts, []);
+    assert.equal(linkLog.behindHouseReplyTexts.length, 1);
+    assert.match(linkLog.behindHouseReplyTexts[0], /ช่องทางชำระเงิน/);
+    assert.match(linkLog.behindHouseReplyTexts[0], /9160581964 กรุงเทพ/);
+    assert.match(linkLog.behindHouseReplyTexts[0], /ภาณุเดช กุมแก้ว/);
+    assert.match(linkLog.behindHouseReplyTexts[0], /บัญชีนี้เท่านั้น/);
 
     const replyMessages = linkLog.behindHouseReplyMessages || [];
     const texts = collectFlexTexts(replyMessages).join('\n');

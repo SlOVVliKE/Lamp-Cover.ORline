@@ -96,6 +96,9 @@ EASYSLIP_MATCH_ACCOUNT=false
 EASYSLIP_CHECK_DUPLICATE=true
 MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/lamp_cover?retryWrites=true&w=majority
 MONGODB_DB_NAME=lamp_cover
+PAYMENT_ACCOUNT_NUMBER=9160581964
+PAYMENT_ACCOUNT_BANK=กรุงเทพ
+PAYMENT_ACCOUNT_NAME=ภาณุเดช กุมแก้ว
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:
@@ -233,6 +236,22 @@ Check the active storage driver:
 
 ```text
 https://your-render-app.onrender.com/api/storage
+```
+
+## Payment Channel Reply
+
+When someone sends this keyword in a group:
+
+```text
+หลังบ้าน
+```
+
+The bot replies with payment account details and the LINE OA profile card. You can change the payment account with:
+
+```text
+PAYMENT_ACCOUNT_NUMBER=9160581964
+PAYMENT_ACCOUNT_BANK=กรุงเทพ
+PAYMENT_ACCOUNT_NAME=ภาณุเดช กุมแก้ว
 ```
 
 Save a queue list by sending a multi-line admin message in the group:
