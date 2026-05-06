@@ -2011,8 +2011,10 @@ test('removes an admin registration from a private IAMNOTADMIN command', async (
   }
 });
 
-test('replies with a LINE OA profile card when a group member asks for หลังบ้าน', async () => {
-  const server = await startServer();
+test('replies with a compact LINE OA profile card when a group member asks for หลังบ้าน', async () => {
+  const server = await startServer({
+    LINE_OFFICIAL_ACCOUNT_IMAGE_URL: 'https://example.com/logo.png'
+  });
 
   try {
     await clearJson(server.baseUrl, '/api/logs');
@@ -2046,6 +2048,22 @@ test('replies with a LINE OA profile card when a group member asks for หลั
     assert.match(texts, /Lamp cover\.OR/);
     assert.match(texts, /ดูโปรไฟล์/);
     assert.equal(actions.some((action) => action.type === 'uri' && action.uri === 'https://line.me/R/ti/p/@lamp-cover'), true);
+
+    const bubble = replyMessages[0].contents;
+    assert.equal(bubble.size, 'micro');
+    assert.equal(bubble.body.paddingAll, '14px');
+
+    const logoFrame = bubble.body.contents.find((item) => (
+      item.type === 'box' && item.width === '52px' && item.height === '52px'
+    ));
+    assert.ok(logoFrame);
+    assert.equal(logoFrame.cornerRadius, '26px');
+
+    const logoImage = logoFrame.contents.find((item) => item.type === 'image');
+    assert.equal(logoImage.url, 'https://example.com/logo.png');
+    assert.equal(logoImage.size, 'full');
+    assert.equal(logoImage.aspectRatio, '1:1');
+    assert.equal(logoImage.aspectMode, 'cover');
   } finally {
     await server.stop();
   }

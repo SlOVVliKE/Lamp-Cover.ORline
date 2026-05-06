@@ -2111,30 +2111,43 @@ function buildBehindHouseFlex(link) {
 
   if (/^https:\/\//i.test(LINE_OFFICIAL_ACCOUNT_IMAGE_URL)) {
     contents.push({
-      type: 'image',
-      url: LINE_OFFICIAL_ACCOUNT_IMAGE_URL,
-      size: 'sm',
-      aspectRatio: '1:1',
-      aspectMode: 'cover',
-      margin: 'none'
+      type: 'box',
+      layout: 'vertical',
+      width: '52px',
+      height: '52px',
+      cornerRadius: '26px',
+      backgroundColor: '#FFFFFF',
+      paddingAll: '0px',
+      alignItems: 'center',
+      justifyContent: 'center',
+      contents: [
+        {
+          type: 'image',
+          url: LINE_OFFICIAL_ACCOUNT_IMAGE_URL,
+          size: 'full',
+          aspectRatio: '1:1',
+          aspectMode: 'cover',
+          margin: 'none'
+        }
+      ]
     });
   }
 
   contents.push(
     flexText(LINE_OFFICIAL_ACCOUNT_NAME, {
-      size: 'xl',
+      size: 'md',
       weight: 'bold',
       align: 'center',
       color: '#111827',
-      margin: contents.length > 0 ? 'lg' : 'none'
+      margin: contents.length > 0 ? 'sm' : 'none'
     }),
     {
       type: 'box',
       layout: 'vertical',
-      backgroundColor: '#65E875',
+      backgroundColor: '#72EF81',
       cornerRadius: 'md',
-      paddingAll: '16px',
-      margin: 'xl',
+      paddingAll: '8px',
+      margin: 'sm',
       action: {
         type: 'uri',
         label: 'ดูโปรไฟล์',
@@ -2142,7 +2155,7 @@ function buildBehindHouseFlex(link) {
       },
       contents: [
         flexText('ดูโปรไฟล์', {
-          size: 'lg',
+          size: 'sm',
           weight: 'bold',
           align: 'center',
           color: '#111827'
@@ -2156,7 +2169,7 @@ function buildBehindHouseFlex(link) {
     altText: `หลังบ้าน ${LINE_OFFICIAL_ACCOUNT_NAME}`,
     contents: {
       type: 'bubble',
-      size: 'kilo',
+      size: 'micro',
       action: {
         type: 'uri',
         label: 'เปิดหลังบ้าน',
@@ -2170,8 +2183,8 @@ function buildBehindHouseFlex(link) {
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '28px',
-        spacing: 'md',
+        paddingAll: '14px',
+        spacing: 'xs',
         alignItems: 'center',
         contents
       }
