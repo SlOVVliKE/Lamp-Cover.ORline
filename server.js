@@ -3110,12 +3110,13 @@ app.post(
               ? behindHouseAction.replyMessages
               : [];
 
-            if (Array.isArray(behindHouseAction.replyTexts) && behindHouseAction.replyTexts.length > 0) {
-              replyJobs.push(replyToLine(event.replyToken, behindHouseAction.replyTexts));
-            }
+            const behindHouseReplyMessages = [
+              ...(Array.isArray(behindHouseAction.replyTexts) ? behindHouseAction.replyTexts : []),
+              ...(Array.isArray(behindHouseAction.replyMessages) ? behindHouseAction.replyMessages : [])
+            ];
 
-            if (Array.isArray(behindHouseAction.replyMessages) && behindHouseAction.replyMessages.length > 0) {
-              replyJobs.push(replyToLine(event.replyToken, behindHouseAction.replyMessages));
+            if (behindHouseReplyMessages.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, behindHouseReplyMessages));
             }
           }
 

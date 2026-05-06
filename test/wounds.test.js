@@ -2015,6 +2015,19 @@ test('replies with a LINE OA profile card when a group member asks for หลั
   }
 });
 
+test('sends behind house payment text and profile card in one LINE reply call', () => {
+  const source = fs.readFileSync('server.js', 'utf8');
+  const blockStart = source.indexOf('if (behindHouseAction) {');
+  const blockEnd = source.indexOf('if (woundAction?.type ===', blockStart);
+  const behindHouseBlock = source.slice(blockStart, blockEnd);
+
+  assert.notEqual(blockStart, -1);
+  assert.notEqual(blockEnd, -1);
+  assert.equal((behindHouseBlock.match(/replyToLine\(event\.replyToken/g) || []).length, 1);
+  assert.match(behindHouseBlock, /behindHouseAction\.replyTexts/);
+  assert.match(behindHouseBlock, /behindHouseAction\.replyMessages/);
+});
+
 test('adds private chat credit from C+ commands', async () => {
   const server = await startServer();
 
