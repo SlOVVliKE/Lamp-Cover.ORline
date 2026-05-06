@@ -2048,6 +2048,31 @@ test('credit flex cards do not attach quick reply buttons or point labels', () =
   assert.equal(source.includes('แต้ม'), false);
 });
 
+test('reports JSON storage when MongoDB is not configured', async () => {
+  const server = await startServer();
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/storage`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.driver, 'json');
+    assert.equal(body.mongoConnected, false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('declares MongoDB storage configuration and dependency', () => {
+  const source = fs.readFileSync('server.js', 'utf8');
+  const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+
+  assert.equal(Boolean(packageJson.dependencies.mongodb), true);
+  assert.match(source, /MONGODB_URI/);
+  assert.match(source, /lamp_logs/);
+  assert.match(source, /lamp_slips/);
+});
+
 test('blocks a new queue round until the previous round result is confirmed', async () => {
   const server = await startServer();
 

@@ -1,6 +1,6 @@
 # LINE Webhook Logger
 
-โปรเจกต์ Node.js Express สำหรับรับ Webhook จาก LINE Messaging API และบันทึก log ลงไฟล์ `logs.json` โดยไม่ต้องใช้ database ภายนอก เหมาะสำหรับ deploy เป็น Web Service บน Render
+โปรเจกต์ Node.js Express สำหรับรับ Webhook จาก LINE Messaging API โดยรองรับการเก็บข้อมูลด้วย MongoDB Atlas ผ่าน `MONGODB_URI` และ fallback เป็นไฟล์ JSON เมื่อต้องการรันแบบง่าย
 
 ## Features
 
@@ -56,6 +56,7 @@ http://localhost:3000/webhook
 | GET | `/logs` | แสดง log เป็นตาราง HTML |
 | GET | `/api/logs` | ส่ง log เป็น JSON |
 | DELETE | `/api/logs` | ล้าง log ทั้งหมด |
+| GET | `/api/storage` | Show active storage driver |
 | GET | `/rounds` | Show queue rounds |
 | GET | `/api/rounds` | Return queue rounds as JSON |
 | DELETE | `/api/rounds` | Clear queue rounds and related wound data |
@@ -93,6 +94,8 @@ LINE_OFFICIAL_ACCOUNT_IMAGE_URL=
 EASYSLIP_API_KEY=your_easyslip_api_key
 EASYSLIP_MATCH_ACCOUNT=false
 EASYSLIP_CHECK_DUPLICATE=true
+MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/lamp_cover?retryWrites=true&w=majority
+MONGODB_DB_NAME=lamp_cover
 ```
 
 6. Deploy service แล้วจด URL ของ Render เช่น:
@@ -208,6 +211,29 @@ EASYSLIP_MATCH_ACCOUNT=true
 ```
 
 Enable this only after registering your receiver bank account inside EasySlip.
+
+## MongoDB Storage
+
+When `MONGODB_URI` is set, the app loads and writes these collections in MongoDB:
+
+```text
+lamp_logs
+lamp_admins
+lamp_messages
+lamp_wounds
+lamp_rounds
+lamp_queue_lists
+lamp_credits
+lamp_slips
+```
+
+The app still writes JSON files as a local backup. If a collection is empty on first startup, the app seeds MongoDB from the existing JSON file so current data can be migrated automatically.
+
+Check the active storage driver:
+
+```text
+https://your-render-app.onrender.com/api/storage
+```
 
 Save a queue list by sending a multi-line admin message in the group:
 
@@ -361,7 +387,7 @@ https://your-render-app.onrender.com/api/rounds
 
 ## Credits
 
-Credit data is stored in `credits.json`. The command works only in a private chat with the LINE OA.
+Credit data is stored in MongoDB when `MONGODB_URI` is set, otherwise it falls back to `credits.json`. The command works only in a private chat with the LINE OA.
 
 Add credit:
 
@@ -407,8 +433,9 @@ Example warning:
 
 ## Notes
 
-- `logs.json` จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน
-- ถ้า `logs.json` เสียหรืออ่านไม่ได้ ระบบจะถือว่า log ว่างและยังทำงานต่อ
-- บน Render แบบ free filesystem ไม่เหมาะกับการเก็บข้อมูลถาวรระยะยาว เพราะไฟล์อาจหายเมื่อ service restart หรือ redeploy
+- ไฟล์ JSON จะถูกสร้างอัตโนมัติเมื่อ server เริ่มทำงาน
+- ถ้าไฟล์ JSON เสียหรืออ่านไม่ได้ ระบบจะถือว่าข้อมูลส่วนนั้นว่างและยังทำงานต่อ
+- ถ้าตั้ง `MONGODB_URI` แล้ว ระบบจะใช้ MongoDB เป็น storage หลัก และเขียน JSON เป็น backup
+- บน Render แบบ free filesystem ไม่เหมาะกับการเก็บข้อมูลถาวรระยะยาว ถ้าใช้งานจริงให้ตั้ง `MONGODB_URI`
 - Webhook จะตอบกลับเร็วด้วย HTTP 200 เมื่อรับ payload ได้ แม้ไม่มี event ใน request
 - ถ้าตั้ง `LINE_CHANNEL_SECRET` แล้ว signature ไม่ถูกต้อง ระบบจะตอบ HTTP 401

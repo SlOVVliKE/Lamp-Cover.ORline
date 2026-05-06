@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +18,8 @@ const EASYSLIP_API_KEY = process.env.EASYSLIP_API_KEY || '';
 const EASYSLIP_API_BASE_URL = process.env.EASYSLIP_API_BASE_URL || 'https://api.easyslip.com/v2';
 const EASYSLIP_MATCH_ACCOUNT = process.env.EASYSLIP_MATCH_ACCOUNT === 'true';
 const EASYSLIP_CHECK_DUPLICATE = process.env.EASYSLIP_CHECK_DUPLICATE !== 'false';
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'lamp_cover';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
 const LOG_FILE = path.join(__dirname, 'logs.json');
@@ -36,6 +39,119 @@ const MAX_CREDITS = 5000;
 const MAX_CREDIT_TRANSACTIONS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
+const MONGO_COLLECTION_BY_FILE = new Map([
+  [LOG_FILE, 'lamp_logs'],
+  [ADMIN_FILE, 'lamp_admins'],
+  [MESSAGE_FILE, 'lamp_messages'],
+  [WOUND_FILE, 'lamp_wounds'],
+  [ROUND_FILE, 'lamp_rounds'],
+  [QUEUE_LIST_FILE, 'lamp_queue_lists'],
+  [CREDIT_FILE, 'lamp_credits']
+]);
+const MONGO_SLIP_COLLECTION = 'lamp_slips';
+let mongoClient = null;
+let mongoDb = null;
+let mongoConnected = false;
+const mongoCache = new Map();
+const mongoWriteQueues = new Map();
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function stripMongoId(value) {
+  if (Array.isArray(value)) {
+    return value.map(stripMongoId);
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const { _id, __sortIndex, ...rest } = value;
+  return Object.fromEntries(Object.entries(rest).map(([key, item]) => [key, stripMongoId(item)]));
+}
+
+function getStorageStatus() {
+  return {
+    driver: mongoConnected ? 'mongodb' : 'json',
+    mongoConfigured: Boolean(MONGODB_URI),
+    mongoConnected,
+    databaseName: mongoConnected ? mongoDb.databaseName : '',
+    collections: [...MONGO_COLLECTION_BY_FILE.values(), MONGO_SLIP_COLLECTION]
+  };
+}
+
+function getMongoCollectionForFile(filePath) {
+  if (!mongoConnected || !mongoDb) return null;
+  const collectionName = MONGO_COLLECTION_BY_FILE.get(filePath);
+  return collectionName ? mongoDb.collection(collectionName) : null;
+}
+
+function queueMongoCollectionReplace(filePath, rows) {
+  const collection = getMongoCollectionForFile(filePath);
+  if (!collection) return;
+
+  const docs = cloneJson(rows).map((row, index) => ({ ...row, __sortIndex: index }));
+  const previousWrite = mongoWriteQueues.get(filePath) || Promise.resolve();
+  const nextWrite = previousWrite
+    .catch(() => {})
+    .then(async () => {
+      await collection.deleteMany({});
+      if (docs.length > 0) {
+        await collection.insertMany(docs, { ordered: true });
+      }
+    })
+    .catch((error) => {
+      console.error(`Unable to write MongoDB collection ${collection.collectionName}:`, error.message);
+    });
+
+  mongoWriteQueues.set(filePath, nextWrite);
+}
+
+async function seedMongoCollectionFromJson(filePath, collection) {
+  const localRows = (() => {
+    try {
+      ensureJsonFile(filePath);
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  })();
+
+  if (localRows.length === 0) return [];
+
+  const docs = cloneJson(localRows).map((row, index) => ({ ...row, __sortIndex: index }));
+  await collection.insertMany(docs, { ordered: true });
+  return localRows;
+}
+
+async function initMongoStorage() {
+  if (!MONGODB_URI) {
+    return;
+  }
+
+  mongoClient = new MongoClient(MONGODB_URI);
+  await mongoClient.connect();
+  mongoDb = mongoClient.db(MONGODB_DB_NAME);
+
+  await mongoDb.collection(MONGO_SLIP_COLLECTION).createIndex({ transRef: 1 }, { unique: true, sparse: true });
+
+  for (const [filePath, collectionName] of MONGO_COLLECTION_BY_FILE.entries()) {
+    const collection = mongoDb.collection(collectionName);
+    await collection.createIndex({ __sortIndex: 1 });
+    let rows = await collection.find({}).sort({ __sortIndex: 1 }).toArray();
+
+    if (rows.length === 0) {
+      rows = await seedMongoCollectionFromJson(filePath, collection);
+    }
+
+    mongoCache.set(filePath, stripMongoId(rows));
+  }
+
+  mongoConnected = true;
+}
 
 function ensureJsonFile(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -44,6 +160,10 @@ function ensureJsonFile(filePath) {
 }
 
 function readJsonArray(filePath, label) {
+  if (mongoConnected && mongoCache.has(filePath)) {
+    return cloneJson(mongoCache.get(filePath));
+  }
+
   try {
     ensureJsonFile(filePath);
     const raw = fs.readFileSync(filePath, 'utf8');
@@ -58,6 +178,11 @@ function readJsonArray(filePath, label) {
 function writeJsonArray(filePath, rows, maxItems) {
   const trimmedRows = Array.isArray(rows) ? rows.slice(0, maxItems) : [];
   fs.writeFileSync(filePath, JSON.stringify(trimmedRows, null, 2), 'utf8');
+
+  if (mongoConnected && MONGO_COLLECTION_BY_FILE.has(filePath)) {
+    mongoCache.set(filePath, cloneJson(trimmedRows));
+    queueMongoCollectionReplace(filePath, trimmedRows);
+  }
 }
 
 function readLogs() {
@@ -833,6 +958,35 @@ function isSlipTransRefUsed(transRef) {
   );
 }
 
+async function reserveSlipTransRef(slipData, event, amount) {
+  const transRef = getSlipTransRef(slipData);
+  if (!transRef) return false;
+
+  if (!mongoConnected || !mongoDb) {
+    return !isSlipTransRefUsed(transRef);
+  }
+
+  try {
+    await mongoDb.collection(MONGO_SLIP_COLLECTION).insertOne({
+      transRef,
+      amount,
+      userId: event.source?.userId || '',
+      messageId: event.message?.id || '',
+      receiverBank: slipData?.rawSlip?.receiver?.bank?.short || slipData?.receiver?.bank?.short || '',
+      timestamp: event.timestamp || Date.now(),
+      time: formatDate(event.timestamp || Date.now()),
+      createdAt: new Date()
+    });
+    return true;
+  } catch (error) {
+    if (error?.code === 11000) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 function getSlipTransRef(slipData) {
   return String(slipData?.rawSlip?.transRef || slipData?.transRef || '').trim();
 }
@@ -1521,6 +1675,15 @@ async function handleSlipCreditEvent(event) {
         type: 'slip_error',
         slipTransRef,
         replyMessages: [buildSlipStatusText('ตรวจสลิปได้ แต่ไม่พบยอดเงิน กรุณาส่งสลิปใหม่')]
+      };
+    }
+
+    const slipReserved = await reserveSlipTransRef(slipData, event, amount);
+    if (!slipReserved) {
+      return {
+        type: 'slip_duplicate',
+        slipTransRef,
+        replyMessages: [buildSlipStatusText('สลิปนี้ถูกใช้แล้ว ไม่สามารถเติมเครดิตซ้ำได้')]
       };
     }
 
@@ -3934,6 +4097,10 @@ app.get('/api/logs', (req, res) => {
   res.json(readLogs());
 });
 
+app.get('/api/storage', (req, res) => {
+  res.json(getStorageStatus());
+});
+
 app.delete('/api/logs', (req, res) => {
   writeLogs([]);
   res.json({ success: true });
@@ -3987,6 +4154,18 @@ app.delete('/api/credits', (req, res) => {
   res.json({ success: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`LINE Webhook Logger is running on port ${PORT}`);
-});
+async function startServer() {
+  try {
+    await initMongoStorage();
+  } catch (error) {
+    console.error('MongoDB storage could not start. Falling back to JSON files:', error.message);
+    mongoConnected = false;
+  }
+
+  app.listen(PORT, () => {
+    console.log(`LINE Webhook Logger is running on port ${PORT}`);
+    console.log(`Storage driver: ${mongoConnected ? 'MongoDB' : 'JSON files'}`);
+  });
+}
+
+startServer();
