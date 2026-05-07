@@ -1138,7 +1138,7 @@ test('settles number มา custom prices by range during no-builder rounds', as
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gnumber-ma', userId: 'UnumberMaOpen' },
-        message: { type: 'text', id: 'm-number-ma-trade', text: '8-25 มา100 ช่างตียก' },
+        message: { type: 'text', id: 'm-number-ma-trade', text: '380-425 มา100 ช่างตียก' },
         timestamp: 1710000050900
       },
       {
@@ -1157,13 +1157,13 @@ test('settles number มา custom prices by range during no-builder rounds', as
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-number-ma-result-1', text: 'แจ้งผล 20' },
+        message: { type: 'text', id: 'm-number-ma-result-1', text: 'แจ้งผล 400' },
         timestamp: 1710000051300
       },
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gnumber-ma', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-number-ma-result-2', text: 'แจ้งผล 20' },
+        message: { type: 'text', id: 'm-number-ma-result-2', text: 'แจ้งผล 400' },
         timestamp: 1710000051400
       }
     ]);
@@ -1171,7 +1171,7 @@ test('settles number มา custom prices by range during no-builder rounds', as
     const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
     assert.equal(wounds.length, 1);
     assert.equal(wounds[0].openKeyword, 'มา');
-    assert.equal(wounds[0].priceRaw, '8-25');
+    assert.equal(wounds[0].priceRaw, '380-425');
     assert.equal(wounds[0].fallbackNoBuilder, true);
     assert.equal(wounds[0].requiredCredit, 200);
     assert.equal(wounds[0].settlementStatus, 'settled');
@@ -1182,6 +1182,49 @@ test('settles number มา custom prices by range during no-builder rounds', as
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
     assert.equal(byUserId.get('UnumberMaOpen').balance, 295);
     assert.equal(byUserId.get('UnumberMaAccept').balance, 100);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('rejects shorthand number มา custom prices', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gnumber-ma-short');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UnumberMaShortOpen', 200, 'm-credit-number-ma-short-open', 1710000050700),
+      creditEvent('UnumberMaShortAccept', 200, 'm-credit-number-ma-short-accept', 1710000050701),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma-short', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-number-ma-short-open-round', text: 'เปิด ตัวเลข ช่างไม่ตี' },
+        timestamp: 1710000050800
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma-short', userId: 'UnumberMaShortOpen' },
+        message: { type: 'text', id: 'm-number-ma-short-trade', text: '8-25 มา100 ช่างตียก' },
+        timestamp: 1710000050900
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gnumber-ma-short', userId: 'UnumberMaShortAccept' },
+        message: { type: 'text', id: 'm-number-ma-short-accept', quotedMessageId: 'm-number-ma-short-trade', text: 'ต' },
+        timestamp: 1710000051000
+      },
+      confirmPairEvent('Gnumber-ma-short', 'UnumberMaShortOpen', 'm-number-ma-short-accept', 'm-number-ma-short-confirm', 1710000051100)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 0);
   } finally {
     await server.stop();
   }

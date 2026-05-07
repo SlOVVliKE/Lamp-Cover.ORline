@@ -424,11 +424,11 @@ Examples:
 400ถ100
 345-385ล500 ชตย
 360-390ถ ชตย
-8-25 มา2000 ช่างตียก
+380-425 มา2000 ช่างตียก
 ```
 
 Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `มา`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
-Use `-` for ranges only, for example `300-340ล500`; `/` is not accepted.
+Use full price numbers with `-` for ranges only, for example `300-340ล500` or `380-425มา2000`; `/` and short ranges like `8-25มา2000` are not accepted.
 `ชตย`, `ช่างตีไม่ติด`, and `ช่างตียก` are no-builder fallback markers. They can be placed after a custom price or used as the accepter reply keyword.
 If a custom price has a stake and a no-builder fallback marker, the user must have reserve credit for 2x the stake, for example `330-350ล1000ชตย` requires 2000 available credit.
 If the admin later sets a builder price for that round, marked wounds are automatically cancelled and no credit is deducted.

@@ -490,6 +490,15 @@ function parseTradeMessage(message) {
 
   const customPriceMatch = text.match(new RegExp(`^(\\d+(?:-\\d+)*?)\\s*(${CUSTOM_PRICE_KEYWORD_PATTERN})\\s*(\\d*)\\s*(${NO_BUILDER_FALLBACK_MARKER_PATTERN})?$`, 'i'));
   if (customPriceMatch) {
+    const priceRaw = customPriceMatch[1];
+    const hasFullPriceNumbers = priceRaw
+      .split('-')
+      .every((part) => /^[1-9]\d{2,}$/.test(part));
+
+    if (!hasFullPriceNumbers) {
+      return null;
+    }
+
     const keyword = customPriceMatch[2];
     const keywordEntry = CUSTOM_PRICE_KEYWORDS.find((item) => item.keyword === keyword);
     const amount = customPriceMatch[3] || '';
@@ -500,7 +509,7 @@ function parseTradeMessage(message) {
       keyword,
       amount,
       rawText: text,
-      priceRaw: customPriceMatch[1],
+      priceRaw,
       customPrice: true,
       fallbackNoBuilder,
       noBuilderPrice: fallbackNoBuilder,
