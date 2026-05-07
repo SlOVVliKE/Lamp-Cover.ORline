@@ -311,6 +311,18 @@ Save a queue list by sending a multi-line admin message in the group:
 หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง
 ```
 
+Numbered queue lists without a blank line before the items are also supported. Separator lines and leading numbers are removed before saving:
+
+```text
+คิวจุดรายการ
+🐸อึ่งไข่บั้งไฟมกาโชค🐸
+🌟🚀ที่นี่บ้านคำผักหนาม💯🚀🌟
+------------------------------
+1.บั้งไฟล้านชาอัมพร 8" บวก +50 วิ🔥
+2.แอ็ดเทวดา 1
+3.ศ.ราชวงศ์
+```
+
 Saved queue lists can be viewed at:
 
 After the queue list is saved, the bot replies in the group:

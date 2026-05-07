@@ -2057,6 +2057,67 @@ test('saves a queue list when only the first line is the queue keyword', async (
   }
 });
 
+test('saves a numbered queue list without a blank line before items', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      '🐸อึ่งไข่บั้งไฟมกาโชค🐸',
+      '🌟🚀ที่นี่บ้านคำผักหนาม💯🚀🌟',
+      '------------------------------',
+      '1.บั้งไฟล้านชาอัมพร 8" บวก +50 วิ🔥',
+      '2.แอ็ดเทวดา 1',
+      '3.ศ.ราชวงศ์',
+      '4.ส.พรพิมล',
+      '5.ธรรมยุ่น',
+      '6. ทองภัคดี 1',
+      '20. โล่เงิน',
+      '24.ส.แสงสว่าง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-numbered-no-blank', 'Uadmin', 'บ้านคำผักหนาม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-numbered-no-blank', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-numbered-no-blank', text: queueText },
+        timestamp: 1710000090500
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.equal(queueLists[0].title, '🐸อึ่งไข่บั้งไฟมกาโชค🐸 🌟🚀ที่นี่บ้านคำผักหนาม💯🚀🌟');
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      [
+        'บั้งไฟล้านชาอัมพร 8" บวก +50 วิ🔥',
+        'แอ็ดเทวดา 1',
+        'ศ.ราชวงศ์',
+        'ส.พรพิมล',
+        'ธรรมยุ่น',
+        'ทองภัคดี 1',
+        'โล่เงิน',
+        'ส.แสงสว่าง'
+      ]
+    );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.deepEqual(queueListLog.queueListReplyTexts, [
+      'คิวจุด✅\n\nบั้งไฟล้านชาอัมพร 8" บวก +50 วิ🔥\nแอ็ดเทวดา 1\nศ.ราชวงศ์\nส.พรพิมล\nธรรมยุ่น\nทองภัคดี 1\nโล่เงิน\nส.แสงสว่าง'
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('saves a queue list when the first line is จุดรายการ', async () => {
   const server = await startServer();
 

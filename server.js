@@ -562,6 +562,18 @@ function looksLikeDateLine(line) {
 
 const QUEUE_LIST_KEYWORDS = ['คิวจุดรายการ', 'จุดรายการ'];
 
+function isQueueSeparatorLine(line) {
+  return /^[-=_\s]{3,}$/.test(String(line || ''));
+}
+
+function isNumberedQueueItemLine(line) {
+  return /^\d+\s*[.)]\s*\S/.test(String(line || ''));
+}
+
+function cleanQueueItemLine(line) {
+  return String(line || '').replace(/^\d+\s*[.)]\s*/, '').trim();
+}
+
 function getQueueListKeyword(line) {
   return QUEUE_LIST_KEYWORDS.find((keyword) => line === keyword || line.startsWith(`${keyword} `)) || '';
 }
@@ -577,10 +589,19 @@ function parseQueueListMessage(message) {
   }
 
   const firstBlankAfterHeader = lines.findIndex((line, index) => index > firstContentIndex && line.length === 0);
-  const itemStartIndex = firstBlankAfterHeader >= 0 ? firstBlankAfterHeader + 1 : firstContentIndex + 1;
+  const firstNumberedItemIndex = lines.findIndex((line, index) =>
+    index > firstContentIndex && isNumberedQueueItemLine(line)
+  );
+  const itemStartIndex =
+    firstBlankAfterHeader >= 0
+      ? firstBlankAfterHeader + 1
+      : firstNumberedItemIndex >= 0
+        ? firstNumberedItemIndex
+        : firstContentIndex + 1;
+  const headerEndIndex = firstBlankAfterHeader >= 0 ? firstBlankAfterHeader : itemStartIndex;
   const headerLines = lines
-    .slice(firstContentIndex, firstBlankAfterHeader >= 0 ? firstBlankAfterHeader : itemStartIndex)
-    .filter(Boolean);
+    .slice(firstContentIndex, headerEndIndex)
+    .filter((line) => line && !isQueueSeparatorLine(line));
   const headerParts = headerLines.map((line, index) =>
     index === 0 ? line.slice(queueListKeyword.length).trim() : line
   );
@@ -592,12 +613,16 @@ function parseQueueListMessage(message) {
 
   for (const line of lines.slice(itemStartIndex)) {
     if (!line) continue;
+    if (isQueueSeparatorLine(line)) continue;
     if (/^หมายเหตุ/.test(line)) {
       note = line;
       break;
     }
 
-    itemLines.push(line);
+    const itemLine = cleanQueueItemLine(line);
+    if (itemLine) {
+      itemLines.push(itemLine);
+    }
   }
 
   if (!title || itemLines.length === 0) {
