@@ -830,6 +830,11 @@ function buildQueueSummary(groupId) {
   return `คิวจุด✅\n\n${lines.join('\n')}${note}`;
 }
 
+function buildQueueListSavedReply(queueList) {
+  const itemCount = Array.isArray(queueList?.items) ? queueList.items.length : 0;
+  return `✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด ${itemCount} รายการ`;
+}
+
 function buildQueueFinishedReply() {
   return [
     '❌จบการรายงาน',
@@ -2810,7 +2815,10 @@ function handleQueueListMessage(event) {
   const queueLists = readQueueLists().filter((list) => list.groupId !== entry.groupId);
 
   writeQueueLists([entry, ...queueLists]);
-  return entry;
+  return {
+    ...entry,
+    replyTexts: [buildQueueListSavedReply(entry)]
+  };
 }
 
 function closeWoundsForRound(event, result, round) {
@@ -3141,6 +3149,11 @@ app.post(
             logEntry.queueListSaved = true;
             logEntry.queueListTitle = queueListEntry.title;
             logEntry.queueListItemCount = queueListEntry.items.length;
+            logEntry.queueListReplyTexts = Array.isArray(queueListEntry.replyTexts) ? queueListEntry.replyTexts : [];
+
+            if (Array.isArray(queueListEntry.replyTexts) && queueListEntry.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, queueListEntry.replyTexts));
+            }
           }
 
           if (queueAction) {

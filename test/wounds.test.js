@@ -1913,7 +1913,11 @@ test('saves a queue list posted by a group admin', async () => {
     assert.equal(queueLists[0].note, 'หมายเหตุคิวจุดอาจมีการเปลี่ยนแปลง');
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
-    assert.equal(logs.some((log) => log.queueListSaved), true);
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.ok(queueListLog);
+    assert.deepEqual(queueListLog.queueListReplyTexts, [
+      '✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด 4 รายการ'
+    ]);
   } finally {
     await server.stop();
   }
@@ -1965,6 +1969,12 @@ test('saves a queue list when only the first line is the queue keyword', async (
         'หนุ่ม ก.ท.ม.'
       ]
     );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.deepEqual(queueListLog.queueListReplyTexts, [
+      '✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด 6 รายการ'
+    ]);
   } finally {
     await server.stop();
   }

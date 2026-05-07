@@ -299,6 +299,13 @@ Save a queue list by sending a multi-line admin message in the group:
 
 Saved queue lists can be viewed at:
 
+After the queue list is saved, the bot replies in the group:
+
+```text
+✅ บันทึกคิวจุดรายการสำเร็จ
+ทั้งหมด 17 รายการ
+```
+
 ```text
 https://your-render-app.onrender.com/queue-lists
 https://your-render-app.onrender.com/api/queue-lists
