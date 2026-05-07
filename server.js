@@ -561,6 +561,7 @@ function looksLikeDateLine(line) {
 }
 
 const QUEUE_LIST_KEYWORDS = ['คิวจุดรายการ', 'จุดรายการ'];
+const QUEUE_LOOKUP_KEYWORDS = ['คิวจุด', 'คิว'];
 
 function isQueueSeparatorLine(line) {
   return /^[-=_\s]{3,}$/.test(String(line || ''));
@@ -576,6 +577,10 @@ function cleanQueueItemLine(line) {
 
 function getQueueListKeyword(line) {
   return QUEUE_LIST_KEYWORDS.find((keyword) => line === keyword || line.startsWith(`${keyword} `)) || '';
+}
+
+function parseQueueLookupKeyword(message) {
+  return QUEUE_LOOKUP_KEYWORDS.includes(normalizeMessageText(message));
 }
 
 function parseQueueListMessage(message) {
@@ -3068,6 +3073,22 @@ function handleQueueListMessage(event) {
   };
 }
 
+function handleQueueLookupCommand(event) {
+  if (!isGroupTextMessage(event) || !parseQueueLookupKeyword(getMessageText(event))) {
+    return null;
+  }
+
+  const source = event.source || {};
+  const queueList = getLatestQueueListForGroup(source.groupId);
+
+  return {
+    type: 'queue_lookup',
+    found: Boolean(queueList),
+    queueList,
+    replyTexts: [queueList ? buildQueueListSavedReply(queueList) : 'ยังไม่มีคิว']
+  };
+}
+
 function closeWoundsForRound(event, result, round) {
   const source = event.source || {};
   const nowTimestamp = event.timestamp || Date.now();
@@ -3354,6 +3375,7 @@ app.post(
           const removedAdminEntry = removeAdminFromEvent(event);
           const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
+          const queueLookupAction = handleQueueLookupCommand(event);
           const queueAction = handleQueueAdminCommand(event);
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
           const blackAccountAction = handleBlackAccountCommand(event);
@@ -3401,6 +3423,16 @@ app.post(
 
             if (Array.isArray(queueListEntry.replyTexts) && queueListEntry.replyTexts.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, queueListEntry.replyTexts));
+            }
+          }
+
+          if (queueLookupAction) {
+            logEntry.queueLookupRequested = true;
+            logEntry.queueLookupFound = queueLookupAction.found;
+            logEntry.queueLookupReplyTexts = Array.isArray(queueLookupAction.replyTexts) ? queueLookupAction.replyTexts : [];
+
+            if (Array.isArray(queueLookupAction.replyTexts) && queueLookupAction.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, queueLookupAction.replyTexts));
             }
           }
 

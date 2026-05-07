@@ -338,6 +338,19 @@ After the queue list is saved, the bot replies in the group:
 หนุ่ม ก.ท.ม.
 ```
 
+Anyone in the group can show the latest saved queue list by sending:
+
+```text
+คิวจุด
+คิว
+```
+
+If the group has no saved queue list yet, the bot replies:
+
+```text
+ยังไม่มีคิว
+```
+
 ```text
 https://your-render-app.onrender.com/queue-lists
 https://your-render-app.onrender.com/api/queue-lists

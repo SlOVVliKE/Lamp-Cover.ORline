@@ -2163,6 +2163,79 @@ test('saves a queue list when the first line is จุดรายการ', as
   }
 });
 
+test('replies with the saved queue list from queue lookup keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'จุดรายการ',
+      '🚀จรวดอีสาน๙๙🚀',
+      '📍 คิวจุด บ้านคุ้ม',
+      '',
+      'น้องบอม(20-60) 380✅✅',
+      'ฟ้าสีทอง(30-80) 313❌❌',
+      'กุ้งเจริญทรัพย์(40-70) 355⛔⛔'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-lookup', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-lookup-save', text: queueText },
+        timestamp: 1710000091100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup', userId: 'Umember' },
+        message: { type: 'text', id: 'm-queue-lookup', text: 'คิวจุด' },
+        timestamp: 1710000091200
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested);
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, true);
+    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, [
+      'คิวจุด✅\n\nน้องบอม(20-60) 380✅✅\nฟ้าสีทอง(30-80) 313❌❌\nกุ้งเจริญทรัพย์(40-70) 355⛔⛔'
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies that no queue exists from queue lookup keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-empty', userId: 'Umember' },
+        message: { type: 'text', id: 'm-queue-lookup-empty', text: 'คิว' },
+        timestamp: 1710000091300
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested);
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, false);
+    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, ['ยังไม่มีคิว']);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('sends a closing report message after the last queue item is resulted', async () => {
   const server = await startServer();
 
