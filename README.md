@@ -162,6 +162,17 @@ After registering in private chat, bind the actual LINE group by sending this co
 
 Group admin commands only work after the registered `userId` is bound to the current LINE `groupId`.
 
+Anyone in the bound group can ask for the current admins by sending one of:
+
+```text
+แอดมิน
+แอด
+admin
+Admin
+```
+
+The bot replies in the group with LINE mentions for the bound admins, ordered by admin priority.
+
 You can change the keyword with this environment variable:
 
 ```text
@@ -246,9 +257,9 @@ When someone sends this keyword in a group:
 หลังบ้าน
 ```
 
-The bot replies with payment account details and the LINE OA profile card. You can change the payment account with:
+The bot replies with payment account details and the LINE OA profile card.
 
-In a private chat with the LINE OA, users can also request the payment account by sending one of:
+In a group or private chat with the LINE OA, users can also request the payment account by sending one of:
 
 ```text
 บช
@@ -256,7 +267,12 @@ In a private chat with the LINE OA, users can also request the payment account b
 เลขบัญชี
 บัญชี
 ลบช
+เลขบช
 ```
+
+For these payment account keywords in a group, the bot replies with the payment account text only. The `หลังบ้าน` keyword still sends both the payment account text and the LINE OA profile card.
+
+You can change the payment account with:
 
 ```text
 PAYMENT_ACCOUNT_NUMBER=9160581964

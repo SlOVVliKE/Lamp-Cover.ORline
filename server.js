@@ -882,6 +882,11 @@ function parsePaymentAccountKeyword(message) {
   return ['บช', 'เลข', 'เลขบัญชี', 'บัญชี', 'ลบช', 'เลขบช'].includes(text);
 }
 
+function parseGroupAdminLookupKeyword(message) {
+  const text = normalizeMessageText(message).toLowerCase();
+  return ['แอดมิน', 'แอด', 'admin'].includes(text);
+}
+
 function roundPoints(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
@@ -2230,13 +2235,84 @@ function buildBehindHousePaymentText() {
   ].join('\n');
 }
 
-function handleBehindHouseCommand(event) {
-  if (!isGroupTextMessage(event) || !parseBehindHouseCommand(getMessageText(event))) {
+async function buildGroupAdminReplyMessage(groupId) {
+  const admins = readAdmins()
+    .filter((admin) => admin.groupId === groupId && admin.userId)
+    .slice(0, 20);
+
+  if (admins.length === 0) {
+    return 'ยังไม่มีแอดมินที่ผูกกับกลุ่มนี้';
+  }
+
+  const labels = await Promise.all(admins.map(async (admin, index) => {
+    const profile = await getLineGroupMemberProfile(groupId, admin.userId).catch(() => null);
+    return normalizeDisplayName(profile?.displayName) || `แอดมิน${admin.priority || index + 1}`;
+  }));
+  let text = 'แอดมินกลุ่มนี้\n';
+  const mentionees = [];
+
+  admins.forEach((admin, index) => {
+    const prefix = `${index + 1}. `;
+    const label = `@${String(labels[index] || `แอดมิน${index + 1}`).replace(/^@+/, '')}`;
+
+    text += prefix;
+    mentionees.push({
+      index: text.length,
+      length: label.length,
+      userId: admin.userId
+    });
+    text += `${label}\n`;
+  });
+
+  return {
+    type: 'text',
+    text: text.trimEnd(),
+    mention: {
+      mentionees
+    }
+  };
+}
+
+async function handleGroupAdminLookupCommand(event) {
+  if (!isGroupTextMessage(event) || !parseGroupAdminLookupKeyword(getMessageText(event))) {
     return null;
+  }
+
+  const source = event.source || {};
+  const replyMessage = await buildGroupAdminReplyMessage(source.groupId);
+  const adminCount = readAdmins().filter((admin) => admin.groupId === source.groupId && admin.userId).length;
+
+  return {
+    type: 'group_admin_lookup',
+    adminCount,
+    replyMessages: [replyMessage]
+  };
+}
+
+function handleBehindHouseCommand(event) {
+  if (!isGroupTextMessage(event)) {
+    return null;
+  }
+
+  const messageText = getMessageText(event);
+  const behindHouseRequested = parseBehindHouseCommand(messageText);
+  const paymentAccountRequested = parsePaymentAccountKeyword(messageText);
+  if (!behindHouseRequested && !paymentAccountRequested) {
+    return null;
+  }
+
+  if (paymentAccountRequested && !behindHouseRequested) {
+    return {
+      type: 'group_payment_account',
+      link: '',
+      replyTexts: [buildBehindHousePaymentText()],
+      replyMessages: []
+    };
   }
 
   if (!LINE_OFFICIAL_ACCOUNT_URL) {
     return {
+      type: 'behind_house',
       link: '',
       replyTexts: [],
       replyMessages: []
@@ -2244,6 +2320,7 @@ function handleBehindHouseCommand(event) {
   }
 
   return {
+    type: 'behind_house',
     link: LINE_OFFICIAL_ACCOUNT_URL,
     replyTexts: [buildBehindHousePaymentText()],
     replyMessages: [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)]
@@ -3023,6 +3100,7 @@ app.post(
           const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
+          const groupAdminAction = await handleGroupAdminLookupCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
           const trackedMessage = trackGroupMessage(event);
           const woundAction = await createWoundFromReply(event);
@@ -3104,8 +3182,21 @@ app.post(
             }
           }
 
+          if (groupAdminAction) {
+            logEntry.groupAdminLookupRequested = true;
+            logEntry.groupAdminCount = groupAdminAction.adminCount || 0;
+            logEntry.groupAdminReplyMessages = Array.isArray(groupAdminAction.replyMessages)
+              ? groupAdminAction.replyMessages
+              : [];
+
+            if (Array.isArray(groupAdminAction.replyMessages) && groupAdminAction.replyMessages.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, groupAdminAction.replyMessages));
+            }
+          }
+
           if (behindHouseAction) {
             logEntry.behindHouseRequested = true;
+            logEntry.groupPaymentAccountRequested = behindHouseAction.type === 'group_payment_account';
             logEntry.behindHouseLink = behindHouseAction.link || '';
             logEntry.behindHouseReplyTexts = Array.isArray(behindHouseAction.replyTexts)
               ? behindHouseAction.replyTexts

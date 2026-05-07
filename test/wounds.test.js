@@ -2254,6 +2254,60 @@ test('replies when a group is bound successfully', async () => {
   }
 });
 
+test('replies with group admin mentions from group admin keywords', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gadmin-lookup', 'UadminPrimary', 'บ้านคุ้ม');
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UadminSecondary' },
+        message: { type: 'text', id: 'admin-Gadmin-lookup-UadminSecondary', text: 'I AM ADMIN : บ้านคุ้ม2' },
+        timestamp: 1710000080040
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gadmin-lookup', userId: 'UadminSecondary' },
+        message: { type: 'text', id: 'bind-Gadmin-lookup-UadminSecondary', text: 'ผูกกลุ่ม : บ้านคุ้ม' },
+        timestamp: 1710000080041
+      }
+    ]);
+
+    await postWebhook(server.baseUrl, ['แอดมิน', 'แอด', 'admin', 'Admin'].map((text, index) => ({
+      type: 'message',
+      source: { type: 'group', groupId: 'Gadmin-lookup', userId: `UmemberAdminLookup${index}` },
+      replyToken: `reply-admin-lookup-${index}`,
+      message: { type: 'text', id: `m-admin-lookup-${index}`, text },
+      timestamp: 1710000080050 + index
+    })));
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const lookupLogs = logs.filter((log) => log.groupAdminLookupRequested);
+
+    assert.equal(lookupLogs.length, 4);
+
+    for (const log of lookupLogs) {
+      assert.equal(log.groupAdminReplyMessages.length, 1);
+      const message = log.groupAdminReplyMessages[0];
+
+      assert.equal(message.type, 'text');
+      assert.match(message.text, /แอดมินกลุ่มนี้/);
+      assert.match(message.text, /@แอดมิน1/);
+      assert.match(message.text, /@แอดมิน2/);
+      assert.deepEqual(
+        message.mention.mentionees.map((mentionee) => mentionee.userId),
+        ['UadminPrimary', 'UadminSecondary']
+      );
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
 test('removes an admin registration from a private IAMNOTADMIN command', async () => {
   const server = await startServer();
 
@@ -2279,6 +2333,38 @@ test('removes an admin registration from a private IAMNOTADMIN command', async (
     const removeLog = logs.find((log) => log.adminRemoved);
     assert.equal(removeLog.adminRemovedGroupName, 'บ้านคุ้ม');
     assert.equal(removeLog.adminRemovedCount, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with payment account details from group account keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+
+    await postWebhook(server.baseUrl, ['บช', 'เลข', 'เลขบัญชี', 'บัญชี', 'ลบช', 'เลขบช'].map((text, index) => ({
+      type: 'message',
+      source: { type: 'group', groupId: 'Ggroup-account', userId: `UgroupAccount${index}` },
+      replyToken: `reply-group-account-${index}`,
+      message: { type: 'text', id: `m-group-account-${index}`, text },
+      timestamp: 1710000080500 + index
+    })));
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const accountLogs = logs.filter((log) => log.groupPaymentAccountRequested);
+
+    assert.equal(accountLogs.length, 6);
+
+    for (const log of accountLogs) {
+      assert.equal(log.behindHouseReplyTexts.length, 1);
+      assert.match(log.behindHouseReplyTexts[0], /ช่องทางชำระเงิน/);
+      assert.match(log.behindHouseReplyTexts[0], /9160581964 กรุงเทพ/);
+      assert.match(log.behindHouseReplyTexts[0], /ภาณุเดช กุมแก้ว/);
+      assert.match(log.behindHouseReplyTexts[0], /บัญชีนี้เท่านั้น/);
+      assert.deepEqual(log.behindHouseReplyMessages, []);
+    }
   } finally {
     await server.stop();
   }
