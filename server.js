@@ -387,6 +387,7 @@ function parseBindGroupCommand(message) {
 }
 
 const ACCEPT_KEYWORDS = ['ต', 'ติด', 'ครับ', 'เค', 'จ้า'];
+const ACCEPT_KEYWORDS_BY_LENGTH = [...ACCEPT_KEYWORDS].sort((keywordA, keywordB) => keywordB.length - keywordA.length);
 const BASE_TRADE_KEYWORDS = [
   { keyword: 'ช่างไล่', side: 'chang_dai' },
   { keyword: 'ช่างยั่ง', side: 'chang_yang' },
@@ -511,9 +512,29 @@ function parseTradeMessage(message) {
 }
 
 function parseAcceptMessage(message) {
+  return parseAcceptIntent(message)?.keyword || null;
+}
+
+function parseAcceptIntent(message) {
   const text = normalizeMessageText(message);
-  if (ACCEPT_KEYWORDS.includes(text)) return text;
-  return parseNoBuilderFallbackMarker(text) || null;
+  if (!text) return null;
+
+  const compactText = text.replace(/\s+/g, '');
+  for (const keyword of ACCEPT_KEYWORDS_BY_LENGTH) {
+    if (compactText === keyword) {
+      return { keyword, amount: '' };
+    }
+
+    if (compactText.startsWith(keyword)) {
+      const amount = compactText.slice(keyword.length);
+      if (/^[1-9]\d*$/.test(amount)) {
+        return { keyword, amount };
+      }
+    }
+  }
+
+  const fallbackMarker = parseNoBuilderFallbackMarker(text);
+  return fallbackMarker ? { keyword: fallbackMarker, amount: '' } : null;
 }
 
 function parseResultCommand(message) {
@@ -1006,8 +1027,7 @@ function getUserActiveWounds(userId) {
 }
 
 function getWoundAmount(wound) {
-  const amount = Number(String(wound?.amount || '').replace(/[^\d.]/g, ''));
-  return Number.isFinite(amount) ? amount : 0;
+  return parsePositiveAmount(wound?.amount);
 }
 
 function getWoundReservedCredit(wound) {
@@ -1026,6 +1046,108 @@ function getCreditSnapshot(userId) {
     activeWounds,
     activeWoundAmount,
     withdrawableBalance
+  };
+}
+
+function parsePositiveAmount(value) {
+  const amount = Number(String(value || '').replace(/[^\d.]/g, ''));
+  return Number.isFinite(amount) && amount > 0 ? roundPoints(amount) : 0;
+}
+
+function getTradeStakeAmount(trade) {
+  return parsePositiveAmount(trade?.amount);
+}
+
+function formatStakeAmount(amount) {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return Number.isInteger(value) ? String(value) : String(roundPoints(value));
+}
+
+function getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId) {
+  return wounds.filter(
+    (wound) =>
+      wound.status === 'active' &&
+      wound.groupId === groupId &&
+      wound.roundId === roundId &&
+      wound.openMessageId === openMessageId
+  );
+}
+
+function getUsedTradeStakeAmount(wounds, groupId, roundId, openMessageId) {
+  return roundPoints(
+    getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId)
+      .reduce((sum, wound) => sum + getWoundAmount(wound), 0)
+  );
+}
+
+function withAcceptedStakeAmount(trade, acceptedStakeAmount) {
+  const amount = formatStakeAmount(acceptedStakeAmount);
+  return amount ? { ...trade, amount } : trade;
+}
+
+function resolveAcceptedTradeForPair(trade, acceptAmount, wounds, groupId, roundId, openMessageId) {
+  const requestedStake = parsePositiveAmount(acceptAmount);
+  const totalStake = getTradeStakeAmount(trade);
+  const activeWounds = getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId);
+
+  if (totalStake <= 0) {
+    if (activeWounds.length > 0 && requestedStake <= 0) {
+      return {
+        reason: 'already_paired',
+        acceptedStake: 0,
+        remainingStake: 0,
+        trade,
+        requiredCredit: getRequiredCreditFromTrade(trade),
+        existingWoundId: activeWounds[0].id
+      };
+    }
+
+    const acceptedTrade = withAcceptedStakeAmount(trade, requestedStake);
+    return {
+      reason: '',
+      acceptedStake: requestedStake,
+      remainingStake: 0,
+      trade: acceptedTrade,
+      requiredCredit: getRequiredCreditFromTrade(acceptedTrade),
+      existingWoundId: ''
+    };
+  }
+
+  const usedStake = getUsedTradeStakeAmount(wounds, groupId, roundId, openMessageId);
+  const remainingStake = Math.max(0, roundPoints(totalStake - usedStake));
+  if (remainingStake <= 0) {
+    return {
+      reason: 'already_paired',
+      acceptedStake: 0,
+      remainingStake,
+      trade,
+      requiredCredit: getRequiredCreditFromTrade(trade),
+      existingWoundId: activeWounds[0]?.id || ''
+    };
+  }
+
+  const acceptedStake = requestedStake > 0 ? requestedStake : remainingStake;
+  if (acceptedStake > remainingStake) {
+    const acceptedTrade = withAcceptedStakeAmount(trade, acceptedStake);
+    return {
+      reason: 'amount_exceeds_remaining',
+      acceptedStake,
+      remainingStake,
+      trade: acceptedTrade,
+      requiredCredit: getRequiredCreditFromTrade(acceptedTrade),
+      existingWoundId: ''
+    };
+  }
+
+  const acceptedTrade = withAcceptedStakeAmount(trade, acceptedStake);
+  return {
+    reason: '',
+    acceptedStake,
+    remainingStake,
+    trade: acceptedTrade,
+    requiredCredit: getRequiredCreditFromTrade(acceptedTrade),
+    existingWoundId: ''
   };
 }
 
@@ -1081,8 +1203,8 @@ function getSlipAmount(slipData) {
 }
 
 function getRequiredCreditFromTrade(trade) {
-  const amount = Number(String(trade?.amount || '').replace(/[^\d.]/g, ''));
-  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  const amount = getTradeStakeAmount(trade);
+  if (amount <= 0) return 0;
 
   const reserveMultiplier = trade?.fallbackNoBuilder ? 2 : 1;
   return roundPoints(amount * reserveMultiplier);
@@ -2423,8 +2545,15 @@ function trackGroupMessage(event) {
   const messageText = getMessageText(event);
   const quotedMessageId = event.message.quotedMessageId || '';
   const quotedMessage = findTrackedMessage(quotedMessageId);
-  const acceptKeyword = parseAcceptMessage(messageText);
+  const acceptIntent = parseAcceptIntent(messageText);
+  const acceptKeyword = acceptIntent?.keyword || null;
   const acceptFallbackNoBuilder = isNoBuilderFallbackMarker(acceptKeyword);
+  const tradeForPairIntent = quotedMessage?.trade
+    ? withAcceptedStakeAmount(
+        withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder),
+        parsePositiveAmount(acceptIntent?.amount)
+      )
+    : null;
   const pairIntent =
     acceptKeyword &&
     quotedMessage?.trade &&
@@ -2439,9 +2568,8 @@ function trackGroupMessage(event) {
           accepterDisplayName: getEventDisplayName(event),
           roundId: openRound.id,
           groupId: source.groupId || '',
-          requiredCredit: getRequiredCreditFromTrade(
-            withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder)
-          ),
+          requiredCredit: getRequiredCreditFromTrade(tradeForPairIntent),
+          acceptAmount: acceptIntent?.amount || '',
           fallbackNoBuilder: acceptFallbackNoBuilder
         }
       : null;
@@ -2559,7 +2687,8 @@ async function createWoundFromReply(event) {
   const openRound = getOpenRoundForGroup(source.groupId);
   if (!openRound) return null;
 
-  const acceptKeyword = parseAcceptMessage(getMessageText(event));
+  const acceptIntent = parseAcceptIntent(getMessageText(event));
+  const acceptKeyword = acceptIntent?.keyword || null;
   const quotedMessage = findTrackedMessage(event.message.quotedMessageId);
 
   if (!acceptKeyword || !quotedMessage) return null;
@@ -2572,25 +2701,25 @@ async function createWoundFromReply(event) {
   if (quotedMessage.trade) {
     if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
     const acceptFallbackNoBuilder = isNoBuilderFallbackMarker(acceptKeyword);
-    const tradeForCredit = withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder);
-
-    const existingWoundForTrade = wounds.find(
-      (wound) =>
-        wound.status === 'active' &&
-        wound.groupId === source.groupId &&
-        wound.roundId === openRound.id &&
-        wound.openMessageId === quotedMessage.id
+    const acceptedTrade = resolveAcceptedTradeForPair(
+      withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder),
+      acceptIntent?.amount || '',
+      wounds,
+      source.groupId,
+      openRound.id,
+      quotedMessage.id
     );
 
-    if (existingWoundForTrade) {
+    if (acceptedTrade.reason) {
       return {
         type: 'wound_rejected',
-        reason: 'already_paired',
+        reason: acceptedTrade.reason,
         openMessageId: quotedMessage.id,
         openerUserId: quotedMessage.userId,
         accepterUserId: source.userId || '',
-        requiredCredit: getRequiredCreditFromTrade(tradeForCredit),
-        existingWoundId: existingWoundForTrade.id
+        requiredCredit: acceptedTrade.requiredCredit,
+        remainingStake: acceptedTrade.remainingStake,
+        existingWoundId: acceptedTrade.existingWoundId
       };
     }
 
@@ -2599,7 +2728,9 @@ async function createWoundFromReply(event) {
       openMessageId: quotedMessage.id,
       openerUserId: quotedMessage.userId,
       accepterUserId: source.userId || '',
-      requiredCredit: getRequiredCreditFromTrade(tradeForCredit),
+      requiredCredit: acceptedTrade.requiredCredit,
+      acceptAmount: acceptIntent?.amount || '',
+      remainingStake: acceptedTrade.remainingStake,
       fallbackNoBuilder: acceptFallbackNoBuilder
     };
   }
@@ -2619,29 +2750,30 @@ async function createWoundFromReply(event) {
       isNoBuilderFallbackMarker(quotedMessage.acceptKeyword || quotedMessage.text) ||
       isNoBuilderFallbackMarker(acceptKeyword)
   );
-  const tradeForWound = withNoBuilderFallback(tradeMessage.trade, fallbackNoBuilder);
-
-  const existingWoundForTrade = wounds.find(
-    (wound) =>
-      wound.status === 'active' &&
-      wound.groupId === source.groupId &&
-      wound.roundId === openRound.id &&
-      wound.openMessageId === tradeMessage.id
+  const acceptedTrade = resolveAcceptedTradeForPair(
+    withNoBuilderFallback(tradeMessage.trade, fallbackNoBuilder),
+    pairIntent.acceptAmount || parseAcceptIntent(quotedMessage.text)?.amount || '',
+    wounds,
+    source.groupId,
+    openRound.id,
+    tradeMessage.id
   );
 
-  if (existingWoundForTrade) {
+  if (acceptedTrade.reason) {
     return {
       type: 'wound_rejected',
-      reason: 'already_paired',
+      reason: acceptedTrade.reason,
       openMessageId: tradeMessage.id,
       openerUserId: tradeMessage.userId,
       accepterUserId: pairIntent.accepterUserId,
-      requiredCredit: getRequiredCreditFromTrade(tradeForWound),
-      existingWoundId: existingWoundForTrade.id
+      requiredCredit: acceptedTrade.requiredCredit,
+      remainingStake: acceptedTrade.remainingStake,
+      existingWoundId: acceptedTrade.existingWoundId
     };
   }
 
-  const requiredCredit = getRequiredCreditFromTrade(tradeForWound);
+  const tradeForWound = acceptedTrade.trade;
+  const requiredCredit = acceptedTrade.requiredCredit;
   const openerSnapshot = getCreditSnapshot(tradeMessage.userId);
   const accepterSnapshot = getCreditSnapshot(pairIntent.accepterUserId);
   const insufficientCreditUsers = [];

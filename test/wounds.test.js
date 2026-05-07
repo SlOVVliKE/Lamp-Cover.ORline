@@ -3071,3 +3071,73 @@ test('reserves active wound credit across multiple pairs and blocks duplicate ac
     await server.stop();
   }
 });
+
+test('allows split accepts on the same trade up to the original stake', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsplit-accept');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UsplitOpener', 400, 'm-credit-split-opener', 1710000040000),
+      creditEvent('UsplitAcceptOne', 100, 'm-credit-split-accept-one', 1710000040001),
+      creditEvent('UsplitAcceptTwo', 300, 'm-credit-split-accept-two', 1710000040002),
+      creditEvent('UsplitAcceptExtra', 100, 'm-credit-split-accept-extra', 1710000040003),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsplit-accept', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-split-round-open', text: 'เปิด เบริดอาค้า' },
+        timestamp: 1710000041000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsplit-accept', userId: 'UsplitOpener' },
+        message: { type: 'text', id: 'm-split-trade-400', text: '+5ถ400' },
+        timestamp: 1710000042000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsplit-accept', userId: 'UsplitAcceptOne' },
+        message: { type: 'text', id: 'm-split-accept-one', quotedMessageId: 'm-split-trade-400', text: 'ต100' },
+        timestamp: 1710000043000
+      },
+      confirmPairEvent('Gsplit-accept', 'UsplitOpener', 'm-split-accept-one', 'm-split-confirm-one', 1710000043500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsplit-accept', userId: 'UsplitAcceptTwo' },
+        message: { type: 'text', id: 'm-split-accept-two', quotedMessageId: 'm-split-trade-400', text: 'ต300' },
+        timestamp: 1710000044000
+      },
+      confirmPairEvent('Gsplit-accept', 'UsplitOpener', 'm-split-accept-two', 'm-split-confirm-two', 1710000044500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsplit-accept', userId: 'UsplitAcceptExtra' },
+        message: { type: 'text', id: 'm-split-accept-extra', quotedMessageId: 'm-split-trade-400', text: 'ต100' },
+        timestamp: 1710000045000
+      },
+      confirmPairEvent('Gsplit-accept', 'UsplitOpener', 'm-split-accept-extra', 'm-split-confirm-extra', 1710000045500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 2);
+    assert.deepEqual(
+      wounds.map((wound) => [wound.openMessageId, wound.accepterUserId, wound.amount, wound.requiredCredit]).sort(),
+      [
+        ['m-split-trade-400', 'UsplitAcceptOne', '100', 100],
+        ['m-split-trade-400', 'UsplitAcceptTwo', '300', 300]
+      ]
+    );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.filter((log) => log.woundCreated).length, 2);
+    assert.equal(logs.some((log) => log.woundRejectedReason === 'already_paired'), true);
+  } finally {
+    await server.stop();
+  }
+});

@@ -439,9 +439,17 @@ Pairing flow:
 A: ชล170
 B replies to A: ต
 A replies to B: ต
+
+A: +5ถ400
+B replies to A: ต100
+A replies to B: ต
+C replies to A: ต300
+A replies to C: ต
 ```
 
 The first reply only marks a pending pair. The wound is created only when the original opener confirms by replying to the accepter's message. Before creating the wound, the bot checks both users' available credit. Active wounds reserve credit, so users can pair multiple times only while their available credit is still enough. If either side has insufficient credit, that pending pair is rejected and the next accepter can still pair with the same opening message.
+
+Split accepts are supported by adding a stake after the accept keyword, such as `ต100`. For example, an opening message with `+5ถ400` can be split into `ต100` and `ต300`; the total active wounds from the same opening message cannot exceed the original 400.
 
 When a wound is created, the bot sends a private Flex card to both users if `LINE_CHANNEL_ACCESS_TOKEN` is set.
 The card includes `แตะเพื่อยกเลิก`. If one user taps it, the bot sends an approval card to the paired opponent with `ยกเลิก` and `ไม่ยกเลิก` buttons. If the opponent approves, the wound is marked `cancelled` and will not be settled by the queue result.
