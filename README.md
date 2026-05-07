@@ -302,8 +302,14 @@ Saved queue lists can be viewed at:
 After the queue list is saved, the bot replies in the group:
 
 ```text
-✅ บันทึกคิวจุดรายการสำเร็จ
-ทั้งหมด 17 รายการ
+คิวจุด✅
+
+น้องบอม(20-60) 380✅✅
+ฟ้าสีทอง(30-80) 313❌❌
+กุ้งเจริญทรัพย์(40-70) 355⛔⛔
+เบริดอาค้า
+ส.กวินท์
+หนุ่ม ก.ท.ม.
 ```
 
 ```text

@@ -831,8 +831,15 @@ function buildQueueSummary(groupId) {
 }
 
 function buildQueueListSavedReply(queueList) {
-  const itemCount = Array.isArray(queueList?.items) ? queueList.items.length : 0;
-  return `✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด ${itemCount} รายการ`;
+  const lines = Array.isArray(queueList?.items)
+    ? queueList.items.map((item) => String(item?.name || '').trim()).filter(Boolean)
+    : [];
+
+  if (lines.length === 0) {
+    return 'คิวจุด✅';
+  }
+
+  return `คิวจุด✅\n\n${lines.join('\n')}`;
 }
 
 function buildQueueFinishedReply() {

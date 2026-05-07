@@ -1916,7 +1916,7 @@ test('saves a queue list posted by a group admin', async () => {
     const queueListLog = logs.find((log) => log.queueListSaved);
     assert.ok(queueListLog);
     assert.deepEqual(queueListLog.queueListReplyTexts, [
-      '✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด 4 รายการ'
+      'คิวจุด✅\n\nกอดก้อนเมฆ\nน้องเหมียว\nส.เจริญสายใจ\nกุ้งเจริญทรัพย์'
     ]);
   } finally {
     await server.stop();
@@ -1973,7 +1973,7 @@ test('saves a queue list when only the first line is the queue keyword', async (
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     const queueListLog = logs.find((log) => log.queueListSaved);
     assert.deepEqual(queueListLog.queueListReplyTexts, [
-      '✅ บันทึกคิวจุดรายการสำเร็จ\nทั้งหมด 6 รายการ'
+      'คิวจุด✅\n\nน้องบอม(20-60) 380✅✅\nฟ้าสีทอง(30-80) 313❌❌\nกุ้งเจริญทรัพย์(40-70) 355⛔⛔\nเบริดอาค้า\nส.กวินท์\nหนุ่ม ก.ท.ม.'
     ]);
   } finally {
     await server.stop();
