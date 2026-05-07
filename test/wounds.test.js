@@ -1890,6 +1890,51 @@ test('saves a queue list when only the first line is the queue keyword', async (
   }
 });
 
+test('saves a queue list when the first line is จุดรายการ', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'จุดรายการ',
+      '🚀จรวดอีสาน๙๙🚀',
+      '📍 คิวจุด บ้านคุ้ม',
+      '',
+      'น้องบอม(20-60) 380✅✅',
+      'ฟ้าสีทอง(30-80) 313❌❌',
+      'กุ้งเจริญทรัพย์(40-70) 355⛔⛔'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-short-keyword', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-short-keyword', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-short-keyword', text: queueText },
+        timestamp: 1710000091000
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.equal(queueLists[0].title, '🚀จรวดอีสาน๙๙🚀 📍 คิวจุด บ้านคุ้ม');
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      [
+        'น้องบอม(20-60) 380✅✅',
+        'ฟ้าสีทอง(30-80) 313❌❌',
+        'กุ้งเจริญทรัพย์(40-70) 355⛔⛔'
+      ]
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
 test('sends a closing report message after the last queue item is resulted', async () => {
   const server = await startServer();
 

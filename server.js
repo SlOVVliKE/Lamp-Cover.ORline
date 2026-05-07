@@ -530,12 +530,19 @@ function looksLikeDateLine(line) {
   return /\d/.test(line) && /(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม|\d{4})/.test(line);
 }
 
+const QUEUE_LIST_KEYWORDS = ['คิวจุดรายการ', 'จุดรายการ'];
+
+function getQueueListKeyword(line) {
+  return QUEUE_LIST_KEYWORDS.find((keyword) => line === keyword || line.startsWith(`${keyword} `)) || '';
+}
+
 function parseQueueListMessage(message) {
   const rawLines = String(message || '').replace(/\r\n/g, '\n').split('\n');
   const lines = rawLines.map((line) => normalizeQueueLine(line));
   const firstContentIndex = lines.findIndex((line) => line.length > 0);
+  const queueListKeyword = firstContentIndex >= 0 ? getQueueListKeyword(lines[firstContentIndex]) : '';
 
-  if (firstContentIndex < 0 || !lines[firstContentIndex].startsWith('คิวจุดรายการ')) {
+  if (!queueListKeyword) {
     return null;
   }
 
@@ -545,7 +552,7 @@ function parseQueueListMessage(message) {
     .slice(firstContentIndex, firstBlankAfterHeader >= 0 ? firstBlankAfterHeader : itemStartIndex)
     .filter(Boolean);
   const headerParts = headerLines.map((line, index) =>
-    index === 0 ? line.replace(/^คิวจุดรายการ\s*/, '').trim() : line
+    index === 0 ? line.slice(queueListKeyword.length).trim() : line
   );
   const dateLineIndex = headerParts.findIndex(looksLikeDateLine);
   const dateText = dateLineIndex >= 0 ? headerParts[dateLineIndex] : '';

@@ -267,7 +267,7 @@ PAYMENT_ACCOUNT_NAME=ภาณุเดช กุมแก้ว
 Save a queue list by sending a multi-line admin message in the group:
 
 ```text
-คิวจุดรายการ
+จุดรายการ
 🚀จรวดอีสาน๙๙🚀
 📍 คิวจุด บ้านคุ้ม
 
