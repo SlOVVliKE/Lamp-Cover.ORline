@@ -1407,6 +1407,40 @@ test('opens a queue round and ignores new wounds after close', async () => {
   }
 });
 
+test('opens a queue round waiting for builder price from admin keyword', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gwait-builder-price');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gwait-builder-price', userId: 'Uadmin' },
+        replyToken: 'reply-wait-builder-price',
+        message: { type: 'text', id: 'm-wait-builder-price', text: 'รอราคาช่าง, เบริดอาค้า' },
+        timestamp: 1710000007000
+      }
+    ]);
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds.length, 1);
+    assert.equal(rounds[0].queueName, 'เบริดอาค้า');
+    assert.equal(rounds[0].priceRaw, '');
+    assert.equal(rounds[0].noBuilderPrice, false);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const waitPriceLog = logs.find((log) => log.queueAction === 'round_opened');
+    assert.deepEqual(waitPriceLog.queueReplyTexts, ['เบริดอาค้า\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀']);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('replies with the queue card format after setting the builder price', async () => {
   const server = await startServer();
 

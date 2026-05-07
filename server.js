@@ -664,6 +664,20 @@ function parseOpenCommand(message) {
   };
 }
 
+function parseWaitBuilderPriceCommand(message) {
+  const match = normalizeMessageText(message).match(/^รอราคาช่าง\s*[,，]?\s*(.+)$/i);
+  if (!match) return null;
+
+  const queueName = match[1].trim();
+  if (!queueName) return null;
+
+  return {
+    queueName,
+    price: null,
+    noBuilderPrice: false
+  };
+}
+
 function parseCloseCommand(message) {
   return normalizeMessageText(message) === 'ปิด';
 }
@@ -2963,7 +2977,7 @@ function handleQueueAdminCommand(event) {
     };
   }
 
-  const openCommand = parseOpenCommand(messageText);
+  const openCommand = parseOpenCommand(messageText) || parseWaitBuilderPriceCommand(messageText);
   if (openCommand) {
     const latestRound = getLatestRoundForGroup(source.groupId);
     if (latestRound && latestRound.status !== 'resulted') {

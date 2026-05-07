@@ -337,6 +337,17 @@ Open a queue round:
 เปิด กอดก้อนเมฆ
 เปิด กอดก้อนเมฆ 300-320
 เปิด น้องเหมียว ช่างไม่ตี
+รอราคาช่าง, เบริดอาค้า
+```
+
+`รอราคาช่าง, ชื่อคิว` opens the queue without a builder price and replies like:
+
+```text
+เบริดอาค้า
+
+ช่าง ⛔️
+
+🚀🚀🚀🚀🚀
 ```
 
 If the group announces no builder during the current round, a registered admin can send:
