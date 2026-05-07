@@ -2114,7 +2114,8 @@ function bindGroupFromEvent(event) {
     groupKey: bindCommand.groupKey,
     groupId: source.groupId,
     userId: source.userId,
-    adminCount: targetIndexes.length
+    adminCount: targetIndexes.length,
+    replyTexts: [`✅ ผูกกลุ่มสำเร็จ: ${bindCommand.groupName}\nกลุ่มนี้พร้อมใช้งานแล้วครับ`]
   };
 }
 
@@ -3044,6 +3045,11 @@ app.post(
             logEntry.groupBindSuccess = bindEntry.bound;
             logEntry.boundGroupName = bindEntry.groupName;
             logEntry.boundGroupId = bindEntry.groupId;
+            logEntry.groupBindReplyTexts = Array.isArray(bindEntry.replyTexts) ? bindEntry.replyTexts : [];
+
+            if (Array.isArray(bindEntry.replyTexts) && bindEntry.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, bindEntry.replyTexts));
+            }
           }
 
           if (queueListEntry) {

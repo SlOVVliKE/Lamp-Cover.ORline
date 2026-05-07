@@ -2042,6 +2042,42 @@ test('does not allow an admin to control an unbound group', async () => {
   }
 });
 
+test('replies when a group is bound successfully', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UbindReply' },
+        message: { type: 'text', id: 'm-admin-bind-reply', text: 'I AM ADMIN : ทดสอบ1' },
+        timestamp: 1710000079000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbind-reply', userId: 'UbindReply' },
+        replyToken: 'reply-bind-success',
+        message: { type: 'text', id: 'm-bind-reply', text: 'ผูกกลุ่ม : ทดสอบ' },
+        timestamp: 1710000079001
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const bindLog = logs.find((log) => log.groupBindRequested);
+
+    assert.equal(bindLog.groupBindSuccess, true);
+    assert.equal(bindLog.boundGroupName, 'ทดสอบ');
+    assert.deepEqual(bindLog.groupBindReplyTexts, [
+      '✅ ผูกกลุ่มสำเร็จ: ทดสอบ\nกลุ่มนี้พร้อมใช้งานแล้วครับ'
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('removes an admin registration from a private IAMNOTADMIN command', async () => {
   const server = await startServer();
 
