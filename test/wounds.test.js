@@ -1677,6 +1677,86 @@ test('settles a ถอย or ยั่ง prediction as winner when the result i
   }
 });
 
+test('uses the post-close builder price as the primary settlement price', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gpost-close-price');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('Uopener-post-close', 200, 'm-credit-post-close-opener', 1710000180000),
+      creditEvent('Uaccepter-post-close', 200, 'm-credit-post-close-accepter', 1710000180001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-post-close-open', text: 'เปิด กอดก้อนเมฆ 300-320' },
+        timestamp: 1710000181000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uopener-post-close' },
+        message: { type: 'text', id: 'm-post-close-trade', text: 'ชล100' },
+        timestamp: 1710000182000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uaccepter-post-close' },
+        message: { type: 'text', id: 'm-post-close-accept', quotedMessageId: 'm-post-close-trade', text: 'ต' },
+        timestamp: 1710000183000
+      },
+      confirmPairEvent('Gpost-close-price', 'Uopener-post-close', 'm-post-close-accept', 'm-post-close-confirm', 1710000183500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-post-close-close', text: 'ปิด' },
+        timestamp: 1710000184000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-post-close-price', text: 'ราคาช่าง 350-380' },
+        timestamp: 1710000185000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-post-close-result-1', text: 'แจ้งผล 340' },
+        timestamp: 1710000186000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpost-close-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-post-close-result-2', text: 'แจ้งผล 340' },
+        timestamp: 1710000187000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].priceRawUsed, '350-380');
+    assert.equal(wounds[0].winningSide, 'chang_yang');
+    assert.equal(wounds[0].winnerUserId, 'Uaccepter-post-close');
+    assert.equal(wounds[0].loserUserId, 'Uopener-post-close');
+    assert.equal(wounds[0].settlementStatus, 'settled');
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].priceRaw, '350-380');
+    assert.equal(rounds[0].resultIcon, '❌');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('Uaccepter-post-close').balance, 295);
+    assert.equal(byUserId.get('Uopener-post-close').balance, 100);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('settles a result inside the builder price as a draw without changing balances', async () => {
   const server = await startServer();
 
