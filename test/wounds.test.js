@@ -2318,6 +2318,68 @@ test('replies with group admin mentions from group admin keywords', async () => 
   }
 });
 
+test('registered group admin can open black account removal notice from black keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gblack-account', 'Uadmin', 'บ้านคุ้มส.กวินทร์');
+
+    await postWebhook(server.baseUrl, ['เปิดบช.ดำ', 'เปิดดำ', 'เปิดบัญชีดำ'].map((text, index) => ({
+      type: 'message',
+      source: { type: 'group', groupId: 'Gblack-account', userId: 'Uadmin' },
+      replyToken: `reply-black-account-open-${index}`,
+      message: { type: 'text', id: `m-black-account-open-${index}`, text },
+      timestamp: 1710000080060 + index
+    })));
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const blackAccountLogs = logs.filter((log) => log.blackAccountAction === 'open_black_account_removal');
+
+    assert.equal(blackAccountLogs.length, 3);
+    for (const log of blackAccountLogs) {
+      assert.deepEqual(log.blackAccountReplyTexts, [
+        'เปิดลบบัญชีดำ(🟢)\nกลุ่ม บ้านคุ้มส.กวินทร์\nกรุณาส่งคอนแทคเพื่อลบบัญชีดำ'
+      ]);
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
+test('registered group admin can open white account notice from white keywords', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gwhite-account', 'Uadmin', 'บ้านคุ้มส.กวินทร์');
+
+    await postWebhook(server.baseUrl, ['เปิดขาว', 'เปิดบช.ขาว', 'เปิดบัญชีขาว'].map((text, index) => ({
+      type: 'message',
+      source: { type: 'group', groupId: 'Gwhite-account', userId: 'Uadmin' },
+      replyToken: `reply-white-account-open-${index}`,
+      message: { type: 'text', id: `m-white-account-open-${index}`, text },
+      timestamp: 1710000080070 + index
+    })));
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const whiteAccountLogs = logs.filter((log) => log.blackAccountAction === 'open_white_account');
+
+    assert.equal(whiteAccountLogs.length, 3);
+    for (const log of whiteAccountLogs) {
+      assert.deepEqual(log.blackAccountReplyTexts, [
+        'เปิดบัญชีขาว(⚪)\nกลุ่ม บ้านคุ้มส.กวินทร์\nกรุณาส่งคอนแทคเพื่อเปิดบัญชีขาว'
+      ]);
+    }
+  } finally {
+    await server.stop();
+  }
+});
+
 test('removes an admin registration from a private IAMNOTADMIN command', async () => {
   const server = await startServer();
 

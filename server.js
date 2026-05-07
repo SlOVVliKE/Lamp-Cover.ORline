@@ -899,6 +899,17 @@ function parseGroupAdminLookupKeyword(message) {
   return ['แอดมิน', 'แอด', 'admin'].includes(text);
 }
 
+function parseOpenAccountListCommand(message) {
+  const text = normalizeMessageText(message).replace(/\s+/g, '');
+  if (['เปิดบช.ดำ', 'เปิดดำ', 'เปิดบัญชีดำ', 'เปิดลบบัญชีดำ'].includes(text)) {
+    return 'black';
+  }
+  if (['เปิดขาว', 'เปิดบช.ขาว', 'เปิดบัญชีขาว'].includes(text)) {
+    return 'white';
+  }
+  return '';
+}
+
 function roundPoints(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
@@ -2301,6 +2312,55 @@ async function handleGroupAdminLookupCommand(event) {
   };
 }
 
+function getBoundGroupName(groupId) {
+  const admin = readAdmins().find((entry) => entry.groupId === groupId && entry.groupName);
+  return admin?.groupName || groupId || '';
+}
+
+function buildOpenBlackAccountReply(groupName) {
+  return [
+    'เปิดลบบัญชีดำ(🟢)',
+    `กลุ่ม ${groupName || '-'}`,
+    'กรุณาส่งคอนแทคเพื่อลบบัญชีดำ'
+  ].join('\n');
+}
+
+function buildOpenWhiteAccountReply(groupName) {
+  return [
+    'เปิดบัญชีขาว(⚪)',
+    `กลุ่ม ${groupName || '-'}`,
+    'กรุณาส่งคอนแทคเพื่อเปิดบัญชีขาว'
+  ].join('\n');
+}
+
+function handleBlackAccountCommand(event) {
+  if (!isGroupTextMessage(event)) {
+    return null;
+  }
+
+  const accountListMode = parseOpenAccountListCommand(getMessageText(event));
+  if (!accountListMode) {
+    return null;
+  }
+
+  const source = event.source || {};
+  if (!isRegisteredAdmin(source.userId, source.groupId)) {
+    return null;
+  }
+
+  const groupName = getBoundGroupName(source.groupId);
+
+  return {
+    type: accountListMode === 'white' ? 'open_white_account' : 'open_black_account_removal',
+    groupName,
+    replyTexts: [
+      accountListMode === 'white'
+        ? buildOpenWhiteAccountReply(groupName)
+        : buildOpenBlackAccountReply(groupName)
+    ]
+  };
+}
+
 function handleBehindHouseCommand(event) {
   if (!isGroupTextMessage(event)) {
     return null;
@@ -3116,6 +3176,7 @@ app.post(
           const queueListEntry = handleQueueListMessage(event);
           const queueAction = handleQueueAdminCommand(event);
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
+          const blackAccountAction = handleBlackAccountCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
           const trackedMessage = trackGroupMessage(event);
           const woundAction = await createWoundFromReply(event);
@@ -3211,6 +3272,18 @@ app.post(
 
             if (Array.isArray(groupAdminAction.replyMessages) && groupAdminAction.replyMessages.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, groupAdminAction.replyMessages));
+            }
+          }
+
+          if (blackAccountAction) {
+            logEntry.blackAccountAction = blackAccountAction.type;
+            logEntry.blackAccountGroupName = blackAccountAction.groupName || '';
+            logEntry.blackAccountReplyTexts = Array.isArray(blackAccountAction.replyTexts)
+              ? blackAccountAction.replyTexts
+              : [];
+
+            if (Array.isArray(blackAccountAction.replyTexts) && blackAccountAction.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, blackAccountAction.replyTexts));
             }
           }
 

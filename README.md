@@ -173,6 +173,20 @@ Admin
 
 The bot replies in the group with LINE mentions for the bound admins, ordered by admin priority.
 
+Bound admins can open black-account or white-account contact collection in the group with:
+
+```text
+เปิดบช.ดำ
+เปิดดำ
+เปิดบัญชีดำ
+
+เปิดขาว
+เปิดบช.ขาว
+เปิดบัญชีขาว
+```
+
+The bot can announce and log these flows, but LINE Messaging API does not allow a bot to kick members out of a group or change the group permission to "admin invite only". Those actions must be handled by a LINE group admin in the LINE app.
+
 You can change the keyword with this environment variable:
 
 ```text
