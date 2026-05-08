@@ -11,6 +11,8 @@ app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+const LINE_MESSAGING_API_BASE_URL = process.env.LINE_MESSAGING_API_BASE_URL || 'https://api.line.me';
+const LINE_MESSAGING_API_URL = LINE_MESSAGING_API_BASE_URL.replace(/\/+$/, '');
 const LINE_CONTENT_API_BASE_URL = process.env.LINE_CONTENT_API_BASE_URL || 'https://api-data.line.me';
 const LINE_OFFICIAL_ACCOUNT_URL = process.env.LINE_OFFICIAL_ACCOUNT_URL || process.env.LINE_OA_URL || '';
 const LINE_OFFICIAL_ACCOUNT_NAME = process.env.LINE_OFFICIAL_ACCOUNT_NAME || 'Lamp cover.OR';
@@ -52,6 +54,12 @@ const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
 const WITHDRAWAL_OPEN_HOUR = 18;
 const WITHDRAWAL_TOKEN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const BUILDER_PRICE_REPEAT_INTERVAL_MS = (() => {
+  const value = Number(process.env.BUILDER_PRICE_REPEAT_INTERVAL_MS);
+  return Number.isFinite(value) && value > 0 ? value : 5000;
+})();
+const BUILDER_PRICE_REPEAT_ENABLED = process.env.BUILDER_PRICE_REPEAT_ENABLED !== 'false';
+const builderPriceRepeatTimers = new Map();
 const MONGO_COLLECTION_BY_FILE = new Map([
   [LOG_FILE, 'lamp_logs'],
   [ADMIN_FILE, 'lamp_admins'],
@@ -1008,6 +1016,48 @@ function buildOpenReply(round) {
   }
 
   return `${round.queueName}\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀`;
+}
+
+function clearBuilderPriceRepeat(groupId) {
+  const key = String(groupId || '').trim();
+  if (!key) return;
+
+  const timer = builderPriceRepeatTimers.get(key);
+  if (timer) {
+    clearInterval(timer);
+    builderPriceRepeatTimers.delete(key);
+  }
+}
+
+function scheduleBuilderPriceRepeat(round) {
+  if (!BUILDER_PRICE_REPEAT_ENABLED || !LINE_CHANNEL_ACCESS_TOKEN || !round?.groupId) {
+    return;
+  }
+
+  clearBuilderPriceRepeat(round.groupId);
+
+  const timer = setInterval(async () => {
+    const currentRound = getLatestRoundForGroup(round.groupId);
+    const shouldStop =
+      !currentRound ||
+      currentRound.id !== round.id ||
+      currentRound.status === 'resulted';
+
+    if (shouldStop) {
+      clearBuilderPriceRepeat(round.groupId);
+      return;
+    }
+
+    await pushToLine(round.groupId, [buildOpenReply(currentRound)]).catch((error) => {
+      console.error('Queue card repeat push failed:', error.message);
+    });
+  }, BUILDER_PRICE_REPEAT_INTERVAL_MS);
+
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+
+  builderPriceRepeatTimers.set(round.groupId, timer);
 }
 
 function buildCloseReply(round) {
@@ -2401,7 +2451,7 @@ async function replyToLine(replyToken, messages) {
     return null;
   }
 
-  const response = await fetch('https://api.line.me/v2/bot/message/reply', {
+  const response = await fetch(`${LINE_MESSAGING_API_URL}/v2/bot/message/reply`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2426,7 +2476,7 @@ async function pushToLine(to, messages) {
     return null;
   }
 
-  const response = await fetch('https://api.line.me/v2/bot/message/push', {
+  const response = await fetch(`${LINE_MESSAGING_API_URL}/v2/bot/message/push`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2517,7 +2567,7 @@ async function getLineGroupMemberProfile(groupId, userId) {
   }
 
   const response = await fetch(
-    `https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
+    `${LINE_MESSAGING_API_URL}/v2/bot/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
     {
       headers: {
         Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
@@ -2538,7 +2588,7 @@ async function getLineUserProfile(userId) {
   }
 
   const response = await fetch(
-    `https://api.line.me/v2/bot/profile/${encodeURIComponent(userId)}`,
+    `${LINE_MESSAGING_API_URL}/v2/bot/profile/${encodeURIComponent(userId)}`,
     {
       headers: {
         Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
@@ -3550,7 +3600,7 @@ function handleQueueLookupCommand(event) {
     type: 'queue_lookup',
     found: Boolean(queueList),
     queueList,
-    replyTexts: [queueList ? buildQueueListSavedReply(queueList) : 'ยังไม่มีคิว']
+    replyTexts: [queueList ? buildQueueSummary(source.groupId) : 'ยังไม่มีคิว']
   };
 }
 
@@ -3665,6 +3715,7 @@ function handleQueueAdminCommand(event) {
     };
 
     upsertRound(round);
+    scheduleBuilderPriceRepeat(round);
     return {
       type: 'round_opened',
       round,
@@ -3790,6 +3841,7 @@ function handleQueueAdminCommand(event) {
   const closedCount = closeResult.closedCount;
 
   upsertRound(resultedRound);
+  clearBuilderPriceRepeat(source.groupId);
   const queueFinished = !wasQueueFinishedBefore && isQueueListFinished(source.groupId);
   const queueFinishedReply = queueFinished ? buildQueueFinishedReply() : '';
   const replyTexts = [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)];

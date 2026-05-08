@@ -14,6 +14,15 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForCondition(predicate, timeoutMs = 1000, intervalMs = 20) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await delay(intervalMs);
+  }
+}
+
 function createTestWithdrawalToken(userId, timestamp = Date.now()) {
   const payload = Buffer.from(JSON.stringify({ userId, timestamp }), 'utf8').toString('base64url');
   const signature = crypto
@@ -1542,6 +1551,101 @@ test('replies with the queue card format after setting the builder price', async
   }
 });
 
+test('repeats the open queue card by push and updates it after builder price is set', async () => {
+  const pushRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    if (req.url === '/v2/bot/message/push') {
+      pushRequests.push(JSON.parse(bodyText || '{}'));
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl,
+    BUILDER_PRICE_REPEAT_INTERVAL_MS: '25'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Grepeat-builder-price', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-builder-open', text: 'เปิด นายกบุญช่วย' },
+        timestamp: 1710000200000
+      }
+    ]);
+
+    await waitForCondition(() => pushRequests.length >= 2, 400, 15);
+    assert.ok(pushRequests.length >= 2);
+    assert.equal(pushRequests[0].to, 'Grepeat-builder-price');
+    assert.deepEqual(pushRequests[0].messages, [
+      {
+        type: 'text',
+        text: 'นายกบุญช่วย\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀'
+      }
+    ]);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-builder-close', text: 'ปิด' },
+        timestamp: 1710000201000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-builder-price', text: 'ราคาช่าง 200-250' },
+        timestamp: 1710000202000
+      }
+    ]);
+
+    await waitForCondition(
+      () => pushRequests.some((request) => request.messages?.[0]?.text === 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀'),
+      400,
+      15
+    );
+    assert.equal(
+      pushRequests.some((request) => request.messages?.[0]?.text === 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀'),
+      true
+    );
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-builder-result-1', text: 'แจ้งผล 330' },
+        timestamp: 1710000203000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-builder-result-2', text: 'แจ้งผล 330' },
+        timestamp: 1710000204000
+      }
+    ]);
+
+    const countAfterResult = pushRequests.length;
+    await delay(80);
+    assert.equal(pushRequests.length, countAfterResult);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('confirms result twice and records the queue price verdict', async () => {
   const server = await startServer();
 
@@ -2216,6 +2320,83 @@ test('replies with the saved queue list from queue lookup keywords', async () =>
     assert.equal(queueLookupLog.queueLookupFound, true);
     assert.deepEqual(queueLookupLog.queueLookupReplyTexts, [
       'คิวจุด✅\n\nน้องบอม(20-60) 380✅✅\nฟ้าสีทอง(30-80) 313❌❌\nกุ้งเจริญทรัพย์(40-70) 355⛔⛔'
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('queue lookup replies with the same result summary format after result confirmation', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      '🚀จรวดอีสาน๙๙🚀',
+      '📍 คิวจุด บ้านคุ้ม',
+      '',
+      'กอดก้อนเมฆ',
+      'น้องเหมียว'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-lookup-summary', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-save', text: queueText },
+        timestamp: 1710000210000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-open', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000211000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-close', text: 'ปิด' },
+        timestamp: 1710000212000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-price', text: 'ราคาช่าง 300-320' },
+        timestamp: 1710000213000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-result-1', text: 'แจ้งผล 438' },
+        timestamp: 1710000214000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-summary-result-2', text: 'แจ้งผล 438' },
+        timestamp: 1710000215000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-summary', userId: 'Umember' },
+        message: { type: 'text', id: 'm-queue-summary-lookup', text: 'คิวจุด' },
+        timestamp: 1710000216000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested);
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, true);
+    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, [
+      'คิวจุด✅\n\nกอดก้อนเมฆ 300-320 438✅\nน้องเหมียว'
     ]);
   } finally {
     await server.stop();
