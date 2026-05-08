@@ -33,6 +33,14 @@ function createTestWithdrawalToken(userId, timestamp = Date.now()) {
   return `${payload}.${signature}`;
 }
 
+function createCreditsAdminUserToken(userId) {
+  return crypto
+    .createHmac('sha256', 'admin123')
+    .update(`credit-user:${userId}`)
+    .digest('hex')
+    .slice(0, 40);
+}
+
 async function waitForServer(baseUrl) {
   const startedAt = Date.now();
 
@@ -3485,6 +3493,17 @@ test('credits page requires login and supports manual top up by user name', asyn
         updatedTime: '2024-03-09T16:00:00.000Z'
       }
     ], null, 2), 'utf8');
+    fs.writeFileSync('messages.json', JSON.stringify([
+      {
+        id: 'm-known-no-credit',
+        groupId: 'Gknown',
+        userId: 'UknownNoCredit',
+        displayName: 'No Credit User',
+        text: 'ชล100',
+        timestamp: 1709999999000,
+        time: '2024-03-09T15:59:59.000Z'
+      }
+    ], null, 2), 'utf8');
 
     const unauthPage = await fetch(`${server.baseUrl}/credits`, { redirect: 'manual' });
     assert.equal(unauthPage.status, 302);
@@ -3512,17 +3531,23 @@ test('credits page requires login and supports manual top up by user name', asyn
     const html = await page.text();
     assert.equal(page.status, 200);
     assert.match(html, /Bank Thirakan/);
+    assert.match(html, /No Credit User/);
     assert.match(html, /placeholder="ค้นหาชื่อ"/);
     assert.match(html, /src="https:\/\/example\.com\/bank\.jpg"/);
     assert.match(html, /ยอดคงเหลือ/);
     assert.match(html, /10\.00/);
+    assert.match(html, /0\.00/);
     assert.doesNotMatch(html, /href="\/credits\/login">Login/);
     assert.doesNotMatch(html, /href="\/logs">Logs/);
     assert.doesNotMatch(html, /UmanualPageUser/);
+    assert.doesNotMatch(html, /UknownNoCredit/);
     assert.doesNotMatch(html, /Updated|User ID|Balance|Transactions|Latest Command/);
 
-    const userKey = html.match(/name="userKey" value="([^"]+)"/)?.[1] || '';
+    const userKey = createCreditsAdminUserToken('UmanualPageUser');
     assert.ok(userKey);
+    const noCreditUserKey = createCreditsAdminUserToken('UknownNoCredit');
+    assert.ok(noCreditUserKey);
+    assert.match(html, new RegExp(`name="userKey" value="${noCreditUserKey}"`));
 
     const manual = await fetch(`${server.baseUrl}/api/credits/manual`, {
       method: 'POST',
@@ -3539,6 +3564,21 @@ test('credits page requires login and supports manual top up by user name', asyn
     assert.equal(credit.balance, 60);
     assert.equal(credit.transactions[0].type, 'manual_credit_added');
     assert.equal(credit.transactions[0].manualNote, 'manual fallback');
+
+    const manualKnownUser = await fetch(`${server.baseUrl}/api/credits/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ userKey: noCreditUserKey, amount: 25, note: 'known user fallback' })
+    });
+    const manualKnownUserBody = await manualKnownUser.json();
+    assert.equal(manualKnownUser.status, 200);
+    assert.equal(manualKnownUserBody.success, true);
+    assert.equal(manualKnownUserBody.balance, 25);
+
+    const updatedCredits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const knownCredit = updatedCredits.find((row) => row.userId === 'UknownNoCredit');
+    assert.equal(knownCredit.balance, 25);
+    assert.equal(knownCredit.transactions[0].displayName, 'No Credit User');
   } finally {
     await server.stop();
   }

@@ -322,8 +322,8 @@ function getCreditUserIdFromAdminToken(userToken) {
   const token = String(userToken || '').trim();
   if (!token) return '';
 
-  const credit = readCredits().find((row) => safeStringEqual(getCreditsAdminUserToken(row.userId), token));
-  return credit?.userId || '';
+  const user = getManualCreditUsers().find((row) => safeStringEqual(getCreditsAdminUserToken(row.userId), token));
+  return user?.userId || '';
 }
 
 function signWithdrawalTokenPayload(payload) {
@@ -1250,6 +1250,59 @@ function findCreditByUserId(userId) {
     updatedTimestamp: 0,
     updatedTime: ''
   };
+}
+
+function addKnownCreditUserCandidate(users, userId, timestamp = 0) {
+  const key = String(userId || '').trim();
+  if (!key) return;
+
+  const current = users.get(key) || { userId: key, lastSeenTimestamp: 0 };
+  const nextTimestamp = Number(timestamp) || 0;
+  users.set(key, {
+    userId: key,
+    lastSeenTimestamp: Math.max(current.lastSeenTimestamp || 0, nextTimestamp)
+  });
+}
+
+function getManualCreditUsers() {
+  const users = new Map();
+  const credits = readCredits();
+  const creditMap = new Map(credits.map((credit) => [credit.userId, credit]));
+
+  credits.forEach((credit) => addKnownCreditUserCandidate(users, credit.userId, credit.updatedTimestamp));
+
+  readMessages().forEach((message) => {
+    addKnownCreditUserCandidate(users, message.userId, message.timestamp);
+  });
+
+  readWounds().forEach((wound) => {
+    const timestamp = wound.openedTimestamp || wound.timestamp || 0;
+    addKnownCreditUserCandidate(users, wound.openerUserId, timestamp);
+    addKnownCreditUserCandidate(users, wound.accepterUserId, timestamp);
+  });
+
+  readWithdrawals().forEach((withdrawal) => {
+    addKnownCreditUserCandidate(users, withdrawal.userId, withdrawal.createdTimestamp);
+  });
+
+  readAdmins().forEach((admin) => {
+    addKnownCreditUserCandidate(users, admin.userId, admin.timestamp);
+  });
+
+  readLogs().forEach((log) => {
+    addKnownCreditUserCandidate(users, log.userId, log.timestamp);
+  });
+
+  return [...users.values()]
+    .map((user) => {
+      const credit = creditMap.get(user.userId) || findCreditByUserId(user.userId);
+      return {
+        ...credit,
+        lastSeenTimestamp: user.lastSeenTimestamp,
+        sortTimestamp: credit.updatedTimestamp || user.lastSeenTimestamp || 0
+      };
+    })
+    .sort((userA, userB) => (userB.sortTimestamp || 0) - (userA.sortTimestamp || 0));
 }
 
 function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
@@ -5335,7 +5388,7 @@ app.get('/withdraw/request/success', (req, res) => {
 });
 
 app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
-  const credits = readCredits();
+  const credits = getManualCreditUsers();
   const creditCards = await Promise.all(
     credits.map(async (credit, index) => {
       const profile = await resolveCreditProfile(credit.userId);
@@ -6078,9 +6131,8 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
   const userId = getCreditUserIdFromAdminToken(req.body?.userKey);
   const amount = Number(req.body?.amount);
   const note = String(req.body?.note || '').trim();
-  const targetCredit = readCredits().find((credit) => credit.userId === userId);
 
-  if (!targetCredit) {
+  if (!userId) {
     return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้นี้' });
   }
 
