@@ -3051,6 +3051,8 @@ test('credits page requires login and supports manual top up by user name', asyn
     assert.match(html, /src="https:\/\/example\.com\/bank\.jpg"/);
     assert.match(html, /ยอดคงเหลือ/);
     assert.match(html, /10\.00/);
+    assert.match(html, /href="\/credits\/login">Login/);
+    assert.doesNotMatch(html, /href="\/logs">Logs/);
     assert.doesNotMatch(html, /UmanualPageUser/);
     assert.doesNotMatch(html, /Updated|User ID|Balance|Transactions|Latest Command/);
 

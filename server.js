@@ -5014,7 +5014,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       </div>
       <div class="actions">
         <a class="button" href="/credits">Refresh</a>
-        <a class="button" href="/logs">Logs</a>
+        <a class="button" href="/credits/login">Login</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
         </form>
