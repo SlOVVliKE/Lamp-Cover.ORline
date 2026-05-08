@@ -3010,6 +3010,7 @@ test('credits page requires login and supports manual top up by user name', asyn
             amount: 10,
             rawText: 'seed',
             displayName: 'Bank Thirakan',
+            pictureUrl: 'https://example.com/bank.jpg',
             balanceAfter: 10,
             timestamp: 1710000000000,
             time: '2024-03-09T16:00:00.000Z'
@@ -3046,6 +3047,10 @@ test('credits page requires login and supports manual top up by user name', asyn
     const html = await page.text();
     assert.equal(page.status, 200);
     assert.match(html, /Bank Thirakan/);
+    assert.match(html, /placeholder="ค้นหาชื่อ"/);
+    assert.match(html, /src="https:\/\/example\.com\/bank\.jpg"/);
+    assert.match(html, /ยอดคงเหลือ/);
+    assert.match(html, /10\.00/);
     assert.doesNotMatch(html, /UmanualPageUser/);
     assert.doesNotMatch(html, /Updated|User ID|Balance|Transactions|Latest Command/);
 

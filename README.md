@@ -263,7 +263,7 @@ CREDITS_ADMIN_PASSWORD=admin123
 CREDITS_ADMIN_SESSION_SECRET=change_this_secret
 ```
 
-The page shows LINE display names instead of raw user IDs and lets an admin manually add credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a top-up card to that user.
+The page shows LINE display names, profile pictures when available, each user's current balance, and a name search box instead of raw user IDs. It lets an admin manually add credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a top-up card to that user.
 
 ## MongoDB Storage
 

@@ -1120,6 +1120,7 @@ function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
     rawText,
     messageId: event.message?.id || '',
     displayName: getEventDisplayName(event),
+    pictureUrl: normalizePictureUrl(event?.source?.pictureUrl || event?.pictureUrl || transactionFields.pictureUrl),
     balanceAfter: nextBalance,
     timestamp: nowTimestamp,
     time: formatDate(nowTimestamp),
@@ -2311,6 +2312,11 @@ function normalizeDisplayName(value) {
   return displayName;
 }
 
+function normalizePictureUrl(value) {
+  const pictureUrl = String(value || '').trim();
+  return /^https?:\/\//i.test(pictureUrl) ? pictureUrl : '';
+}
+
 function getEventDisplayName(event) {
   return normalizeDisplayName(event?.source?.displayName || event?.displayName || '');
 }
@@ -2337,9 +2343,26 @@ function findKnownDisplayNameByUserId(userId) {
   return '';
 }
 
-async function resolveCreditDisplayName(userId) {
+function findKnownPictureUrlByUserId(userId) {
+  if (!userId) return '';
+
+  const credit = readCredits().find((row) => row.userId === userId);
+  return (credit?.transactions || [])
+    .map((transaction) => normalizePictureUrl(transaction.pictureUrl))
+    .find(Boolean) || '';
+}
+
+async function resolveCreditProfile(userId) {
   const profile = await getLineUserProfile(userId).catch(() => null);
-  return normalizeDisplayName(profile?.displayName) || findKnownDisplayNameByUserId(userId) || 'ไม่พบชื่อผู้ใช้';
+  return {
+    displayName: normalizeDisplayName(profile?.displayName) || findKnownDisplayNameByUserId(userId) || 'ไม่พบชื่อผู้ใช้',
+    pictureUrl: normalizePictureUrl(profile?.pictureUrl) || findKnownPictureUrlByUserId(userId)
+  };
+}
+
+async function resolveCreditDisplayName(userId) {
+  const profile = await resolveCreditProfile(userId);
+  return profile.displayName;
 }
 
 async function resolveGroupMemberDisplayName(groupId, userId, trackedMessage = null) {
@@ -4752,15 +4775,24 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
   const credits = readCredits();
   const creditCards = await Promise.all(
     credits.map(async (credit, index) => {
-      const displayName = await resolveCreditDisplayName(credit.userId);
+      const profile = await resolveCreditProfile(credit.userId);
+      const displayName = profile.displayName;
+      const pictureUrl = profile.pictureUrl;
       const userToken = getCreditsAdminUserToken(credit.userId);
+      const avatar = pictureUrl
+        ? `<img class="avatar avatar-image" src="${escapeHtml(pictureUrl)}" alt="">`
+        : `<div class="avatar">${escapeHtml(displayName.slice(0, 1) || String(index + 1))}</div>`;
 
-      return `<article class="credit-card">
+      return `<article class="credit-card" data-credit-card data-search-name="${escapeHtml(displayName.toLocaleLowerCase('th-TH'))}">
         <div class="user-row">
-          <div class="avatar">${escapeHtml(displayName.slice(0, 1) || String(index + 1))}</div>
-          <div>
+          ${avatar}
+          <div class="user-main">
             <div class="user-name">${escapeHtml(displayName)}</div>
             <div class="user-sub">ผู้ใช้ลำดับ ${index + 1}</div>
+          </div>
+          <div class="balance-box">
+            <span>ยอดคงเหลือ</span>
+            <strong data-balance>${escapeHtml(formatPoints(credit.balance))}</strong>
           </div>
         </div>
         <form class="credit-form">
@@ -4796,27 +4828,27 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
     }
     main {
       width: 100%;
-      max-width: 430px;
+      max-width: 390px;
       margin: 0 auto;
-      padding: 16px 14px 28px;
+      padding: 12px 10px 24px;
     }
     .topbar {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
       gap: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 10px;
     }
     h1 {
       margin: 0;
       color: #111827;
-      font-size: 28px;
+      font-size: 24px;
       line-height: 1.1;
     }
     .hint {
       margin: 6px 0 0;
       color: #6b7280;
-      font-size: 13px;
+      font-size: 12px;
     }
     .actions {
       display: grid;
@@ -4827,84 +4859,127 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 36px;
+      min-height: 32px;
       border: 0;
-      border-radius: 9px;
-      padding: 8px 10px;
+      border-radius: 8px;
+      padding: 7px 9px;
       color: #ffffff;
       background: #047857;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       cursor: pointer;
       text-decoration: none;
       white-space: nowrap;
     }
     .logout-button { background: #374151; }
+    .search-wrap {
+      margin: 0 0 10px;
+    }
+    .search-input {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 8px 11px;
+      font-size: 15px;
+      background: #ffffff;
+    }
     .cards {
       display: grid;
-      gap: 12px;
+      gap: 9px;
     }
     .credit-card {
-      padding: 14px;
+      padding: 10px;
       background: #ffffff;
       border: 1px solid #e5e7eb;
-      border-radius: 12px;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+      border-radius: 10px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
     }
+    .credit-card[hidden] { display: none; }
     .user-row {
       display: flex;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
+      gap: 9px;
+      margin-bottom: 8px;
     }
     .avatar {
-      width: 42px;
-      height: 42px;
+      width: 34px;
+      height: 34px;
       display: flex;
       align-items: center;
       justify-content: center;
       border-radius: 999px;
       color: #ffffff;
       background: #047857;
-      font-size: 20px;
+      font-size: 17px;
       font-weight: 700;
       flex: 0 0 auto;
     }
+    .avatar-image {
+      display: block;
+      object-fit: cover;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+    }
+    .user-main {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
     .user-name {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 800;
       word-break: break-word;
     }
     .user-sub {
       margin-top: 2px;
       color: #6b7280;
-      font-size: 12px;
+      font-size: 11px;
+    }
+    .balance-box {
+      min-width: 86px;
+      padding: 6px 8px;
+      border-radius: 9px;
+      background: #ecfdf5;
+      text-align: right;
+      flex: 0 0 auto;
+    }
+    .balance-box span {
+      display: block;
+      color: #047857;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .balance-box strong {
+      display: block;
+      margin-top: 2px;
+      color: #065f46;
+      font-size: 14px;
     }
     label {
       display: block;
-      margin-top: 10px;
+      margin-top: 7px;
       color: #374151;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
     }
     input {
       width: 100%;
-      min-height: 42px;
-      margin-top: 6px;
+      min-height: 36px;
+      margin-top: 4px;
       border: 1px solid #d1d5db;
-      border-radius: 9px;
-      padding: 9px 10px;
-      font-size: 16px;
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 15px;
     }
     .credit-form button {
       width: 100%;
-      min-height: 44px;
-      margin-top: 12px;
+      min-height: 38px;
+      margin-top: 9px;
       border: 0;
-      border-radius: 9px;
+      border-radius: 8px;
       color: #ffffff;
       background: #16a34a;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 800;
       cursor: pointer;
     }
@@ -4913,10 +4988,10 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       cursor: wait;
     }
     .form-status {
-      min-height: 20px;
-      margin-top: 8px;
+      min-height: 18px;
+      margin-top: 6px;
       color: #047857;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
     }
     .form-status.error { color: #b91c1c; }
@@ -4945,8 +5020,12 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
         </form>
       </div>
     </div>
+    <div class="search-wrap">
+      <input id="creditSearch" class="search-input" type="search" placeholder="ค้นหาชื่อ" autocomplete="off">
+    </div>
     <section class="cards">
       ${creditCards.length ? creditCards.join('') : '<div class="empty">ยังไม่มีผู้ใช้เครดิต</div>'}
+      <div id="creditSearchEmpty" class="empty" hidden>ไม่พบชื่อที่ค้นหา</div>
     </section>
   </main>
   <script>
@@ -4957,10 +5036,32 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       });
     }
 
+    const searchInput = document.getElementById('creditSearch');
+    const searchEmpty = document.getElementById('creditSearchEmpty');
+    const creditCards = Array.from(document.querySelectorAll('[data-credit-card]'));
+
+    function filterCreditCards() {
+      const query = (searchInput?.value || '').trim().toLocaleLowerCase('th-TH');
+      let visibleCount = 0;
+
+      creditCards.forEach((card) => {
+        const visible = !query || (card.dataset.searchName || '').includes(query);
+        card.hidden = !visible;
+        if (visible) visibleCount += 1;
+      });
+
+      if (searchEmpty) {
+        searchEmpty.hidden = visibleCount !== 0 || creditCards.length === 0;
+      }
+    }
+
+    searchInput?.addEventListener('input', filterCreditCards);
+
     document.querySelectorAll('.credit-form').forEach((form) => {
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
 
+        const card = form.closest('[data-credit-card]');
         const button = form.querySelector('button');
         const status = form.querySelector('.form-status');
         const payload = Object.fromEntries(new FormData(form).entries());
@@ -4982,6 +5083,10 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
           }
 
           form.reset();
+          const balanceTarget = card?.querySelector('[data-balance]');
+          if (balanceTarget) {
+            balanceTarget.textContent = formatNumber(result.balance);
+          }
           status.textContent = 'เติมสำเร็จ ยอดล่าสุด ' + formatNumber(result.balance);
         } catch (error) {
           status.classList.add('error');
@@ -5067,10 +5172,11 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
   }
 
   const nowTimestamp = Date.now();
-  const displayName = await resolveCreditDisplayName(userId);
+  const profile = await resolveCreditProfile(userId);
+  const displayName = profile.displayName;
   const manualEvent = {
     type: 'manual_credit',
-    source: { type: 'web_admin', userId, displayName },
+    source: { type: 'web_admin', userId, displayName, pictureUrl: profile.pictureUrl },
     message: { id: `manual-credit-${nowTimestamp}-${crypto.randomBytes(4).toString('hex')}` },
     timestamp: nowTimestamp
   };
