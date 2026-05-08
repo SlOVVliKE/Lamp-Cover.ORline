@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
@@ -11,6 +12,16 @@ let nextPort = 3300 + Math.floor(Math.random() * 500);
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createTestWithdrawalToken(userId, timestamp = Date.now()) {
+  const payload = Buffer.from(JSON.stringify({ userId, timestamp }), 'utf8').toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', 'admin123')
+    .update(payload)
+    .digest('hex')
+    .slice(0, 48);
+  return `${payload}.${signature}`;
 }
 
 async function waitForServer(baseUrl) {
@@ -3034,6 +3045,7 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
     const actions = collectFlexActions(withdrawLog.creditReplyMessages);
     const formAction = actions.find((action) => action.type === 'uri' && /\/withdraw\/request\?token=/.test(action.uri || ''));
     assert.ok(formAction);
+    const firstToken = new URL(formAction.uri).searchParams.get('token') || '';
 
     const formPage = await fetch(formAction.uri);
     const formHtml = await formPage.text();
@@ -3047,7 +3059,7 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        token: new URL(formAction.uri).searchParams.get('token') || '',
+        token: firstToken,
         bankName: 'กรุงเทพ',
         accountNumber: '1234567890',
         amount: '301'
@@ -3059,7 +3071,7 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        token: new URL(formAction.uri).searchParams.get('token') || '',
+        token: firstToken,
         bankName: 'กรุงเทพ',
         accountNumber: '1234567890',
         amount: '300'
@@ -3068,6 +3080,57 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
     });
     assert.equal(validSubmit.status, 302);
     assert.match(validSubmit.headers.get('location') || '', /\/withdraw\/request\/success/);
+
+    const duplicateFormPage = await fetch(formAction.uri);
+    assert.equal(duplicateFormPage.status, 409);
+
+    const duplicateTokenSubmit = await fetch(`${server.baseUrl}/withdraw/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: firstToken,
+        bankName: 'กรุงเทพ',
+        accountNumber: '1234567890',
+        amount: '300'
+      })
+    });
+    assert.equal(duplicateTokenSubmit.status, 409);
+    const [createdWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
+    assert.ok(createdWithdrawal);
+    assert.equal(JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8')).length, 1);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UwithdrawUser' },
+        replyToken: 'reply-withdraw-form-2',
+        message: { type: 'text', id: 'm-withdraw-form-2', text: 'ถอนยอดเงิน' },
+        timestamp: Date.parse('2024-03-09T11:10:00.000Z')
+      }
+    ]);
+    const secondLogs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const secondWithdrawLog = secondLogs.find((log) => log.timestamp === Date.parse('2024-03-09T11:10:00.000Z') && log.creditAction === 'withdraw_pending');
+    assert.ok(secondWithdrawLog);
+    assert.equal(secondWithdrawLog.withdrawalId, createdWithdrawal.id);
+    const secondActions = collectFlexActions(secondWithdrawLog.creditReplyMessages);
+    assert.equal(secondActions.some((action) => action.type === 'uri' && /\/withdraw\/request\?token=/.test(action.uri || '')), false);
+
+    const freshPendingToken = createTestWithdrawalToken('UwithdrawUser');
+    const pendingFormPage = await fetch(`${server.baseUrl}/withdraw/request?token=${encodeURIComponent(freshPendingToken)}`);
+    assert.equal(pendingFormPage.status, 409);
+
+    const pendingDuplicateSubmit = await fetch(`${server.baseUrl}/withdraw/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: freshPendingToken,
+        bankName: 'กสิกร',
+        accountNumber: '2223334445',
+        amount: '50'
+      })
+    });
+    assert.equal(pendingDuplicateSubmit.status, 409);
+    assert.equal(JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8')).length, 1);
 
     const unauthWithdrawalsPage = await fetch(`${server.baseUrl}/withdrawals`, { redirect: 'manual' });
     assert.equal(unauthWithdrawalsPage.status, 302);

@@ -341,6 +341,13 @@ function parseWithdrawalRequestToken(token) {
   }
 }
 
+function getWithdrawalRequestTokenHash(token) {
+  return crypto
+    .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
+    .update(String(token || '').trim())
+    .digest('hex');
+}
+
 function getPublicBaseUrl(req) {
   const configuredBaseUrl = String(process.env.PUBLIC_BASE_URL || process.env.APP_BASE_URL || '').replace(/\/+$/, '');
   return configuredBaseUrl || `${req.protocol}://${req.get('host')}`;
@@ -476,6 +483,7 @@ function normalizeWithdrawalRow(row) {
     accountNumber: String(row.accountNumber || '').trim(),
     amount: roundPoints(row.amount),
     availableBalance: roundPoints(row.availableBalance),
+    requestTokenHash: String(row.requestTokenHash || '').trim(),
     status: row.status || 'pending',
     createdTimestamp: row.createdTimestamp || row.timestamp || 0,
     createdTime: row.createdTime || row.time || '',
@@ -493,6 +501,13 @@ function sortWithdrawals(withdrawals) {
     .map(normalizeWithdrawalRow)
     .filter((withdrawal) => withdrawal.id && withdrawal.userId)
     .sort((withdrawalA, withdrawalB) => (withdrawalB.createdTimestamp || 0) - (withdrawalA.createdTimestamp || 0));
+}
+
+function getPendingWithdrawalForUser(userId) {
+  const targetUserId = String(userId || '').trim();
+  if (!targetUserId) return null;
+
+  return readWithdrawals().find((withdrawal) => withdrawal.userId === targetUserId && withdrawal.status === 'pending') || null;
 }
 
 function escapeRegExp(value) {
@@ -1898,6 +1913,27 @@ function buildWithdrawalRequestFlex(snapshot, formUrl) {
   };
 }
 
+function buildWithdrawalPendingFlex(withdrawal, snapshot) {
+  return {
+    type: 'flex',
+    altText: `มีรายการถอนที่รอดำเนินการ ${formatPoints(withdrawal.amount)}`,
+    contents: buildCreditBubble({
+      title: '⏳ รอดำเนินการ',
+      titleColor: '#F59E0B',
+      bodyColor: '#F59E0B',
+      subtitle: 'รายการถอนของคุณ',
+      amount: formatPoints(withdrawal.amount),
+      rows: [
+        flexRow('ธนาคาร', withdrawal.bankName || '-'),
+        flexRow('เลขบัญชี', withdrawal.accountNumber || '-'),
+        flexRow('ถอนได้ตอนนี้', formatPoints(snapshot.withdrawableBalance)),
+        flexRow('สถานะ', 'รอแอดมินดำเนินการ', '#F59E0B')
+      ],
+      footer: 'ส่งคำขอถอนใหม่ได้หลังจากแอดมินเสร็จสิ้นหรือยกเลิกรายการนี้'
+    })
+  };
+}
+
 function buildWithdrawalCompletedFlex(withdrawal, credit) {
   return {
     type: 'flex',
@@ -2238,6 +2274,19 @@ function handleCreditEvent(event, publicBaseUrl = '') {
   }
 
   if (keyword === 'withdraw' && isWithdrawalRequestOpen(event.timestamp || Date.now())) {
+    const pendingWithdrawal = getPendingWithdrawalForUser(source.userId);
+    if (pendingWithdrawal) {
+      return {
+        type: 'withdraw_pending',
+        creditBalance: snapshot.credit.balance,
+        activeWoundAmount: snapshot.activeWoundAmount,
+        withdrawableBalance: snapshot.withdrawableBalance,
+        activeWoundCount: snapshot.activeWounds.length,
+        withdrawalId: pendingWithdrawal.id,
+        replyMessages: [buildWithdrawalPendingFlex(pendingWithdrawal, snapshot)]
+      };
+    }
+
     const token = createWithdrawalRequestToken(source.userId);
     const formUrl = `${String(publicBaseUrl || '').replace(/\/+$/, '')}/withdraw/request?token=${encodeURIComponent(token)}`;
 
@@ -4018,6 +4067,7 @@ app.post(
             logEntry.slipTransRef = creditAction.slipTransRef || '';
             logEntry.slipReceiverBank = creditAction.slipReceiverBank || '';
             logEntry.slipErrorCode = creditAction.slipErrorCode || '';
+            logEntry.withdrawalId = creditAction.withdrawalId || '';
             logEntry.creditReplyMessages = Array.isArray(creditAction.replyMessages) ? creditAction.replyMessages : [];
 
             if (Array.isArray(creditAction.replyMessages) && creditAction.replyMessages.length > 0) {
@@ -5018,6 +5068,16 @@ app.get('/withdraw/request', async (req, res) => {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
   }
 
+  const requestTokenHash = getWithdrawalRequestTokenHash(token);
+  const existingWithdrawals = readWithdrawals();
+  if (existingWithdrawals.some((withdrawal) => safeStringEqual(withdrawal.requestTokenHash, requestTokenHash))) {
+    return res.status(409).send('ลิงก์ถอนเครดิตนี้ถูกใช้แล้ว');
+  }
+
+  if (existingWithdrawals.some((withdrawal) => withdrawal.userId === tokenData.userId && withdrawal.status === 'pending')) {
+    return res.status(409).send('คุณมีรายการถอนที่รอดำเนินการอยู่แล้ว');
+  }
+
   const snapshot = getCreditSnapshot(tokenData.userId);
   const profile = await resolveCreditProfile(tokenData.userId);
 
@@ -5137,6 +5197,16 @@ app.post('/withdraw/request', async (req, res) => {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
   }
 
+  const requestTokenHash = getWithdrawalRequestTokenHash(token);
+  const existingWithdrawals = readWithdrawals();
+  if (existingWithdrawals.some((withdrawal) => safeStringEqual(withdrawal.requestTokenHash, requestTokenHash))) {
+    return res.status(409).send('ลิงก์ถอนเครดิตนี้ถูกใช้แล้ว');
+  }
+
+  if (existingWithdrawals.some((withdrawal) => withdrawal.userId === tokenData.userId && withdrawal.status === 'pending')) {
+    return res.status(409).send('คุณมีรายการถอนที่รอดำเนินการอยู่แล้ว');
+  }
+
   const bankName = String(req.body?.bankName || '').trim();
   const accountNumber = String(req.body?.accountNumber || '').trim();
   const amount = roundPoints(Number(req.body?.amount));
@@ -5161,6 +5231,7 @@ app.post('/withdraw/request', async (req, res) => {
     accountNumber,
     amount,
     availableBalance: snapshot.withdrawableBalance,
+    requestTokenHash,
     status: 'pending',
     createdTimestamp: nowTimestamp,
     createdTime: formatDate(nowTimestamp)
