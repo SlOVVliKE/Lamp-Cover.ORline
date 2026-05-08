@@ -2078,7 +2078,7 @@ test('saves a numbered queue list without a blank line before items', async () =
       '6. ทองภัคดี 1',
       '20. โล่เงิน',
       '24.ส.แสงสว่าง'
-    ].join('\n');
+    ].join('\n') + '\n';
 
     await registerAndBindAdmin(server.baseUrl, 'Gqueue-numbered-no-blank', 'Uadmin', 'บ้านคำผักหนาม');
 

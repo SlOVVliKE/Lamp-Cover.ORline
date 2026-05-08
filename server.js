@@ -593,9 +593,13 @@ function parseQueueListMessage(message) {
     return null;
   }
 
-  const firstBlankAfterHeader = lines.findIndex((line, index) => index > firstContentIndex && line.length === 0);
   const firstNumberedItemIndex = lines.findIndex((line, index) =>
     index > firstContentIndex && isNumberedQueueItemLine(line)
+  );
+  const firstBlankAfterHeader = lines.findIndex((line, index) =>
+    index > firstContentIndex &&
+    line.length === 0 &&
+    (firstNumberedItemIndex < 0 || index < firstNumberedItemIndex)
   );
   const itemStartIndex =
     firstBlankAfterHeader >= 0
