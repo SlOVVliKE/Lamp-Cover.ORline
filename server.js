@@ -60,6 +60,7 @@ const BUILDER_PRICE_REPEAT_INTERVAL_MS = (() => {
 })();
 const BUILDER_PRICE_REPEAT_ENABLED = process.env.BUILDER_PRICE_REPEAT_ENABLED !== 'false';
 const builderPriceRepeatTimers = new Map();
+const NO_QUEUE_REPLY = 'ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀';
 const MONGO_COLLECTION_BY_FILE = new Map([
   [LOG_FILE, 'lamp_logs'],
   [ADMIN_FILE, 'lamp_admins'],
@@ -253,6 +254,12 @@ function readQueueLists() {
 
 function writeQueueLists(queueLists) {
   writeJsonArray(QUEUE_LIST_FILE, sortQueueLists(queueLists), MAX_QUEUE_LISTS);
+}
+
+function clearQueueListForGroup(groupId) {
+  const key = String(groupId || '').trim();
+  if (!key) return;
+  writeQueueLists(readQueueLists().filter((queueList) => queueList.groupId !== key));
 }
 
 function readCredits() {
@@ -1041,7 +1048,7 @@ function scheduleBuilderPriceRepeat(round) {
     const shouldStop =
       !currentRound ||
       currentRound.id !== round.id ||
-      currentRound.status === 'resulted';
+      currentRound.status !== 'open';
 
     if (shouldStop) {
       clearBuilderPriceRepeat(round.groupId);
@@ -2293,7 +2300,10 @@ function handleCreditEvent(event, publicBaseUrl = '') {
   if (parsePaymentAccountKeyword(messageText)) {
     return {
       type: 'payment_account',
-      replyMessages: [buildBehindHousePaymentText()]
+      replyMessages: [
+        buildBehindHousePaymentText(),
+        ...(LINE_OFFICIAL_ACCOUNT_URL ? [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)] : [])
+      ]
     };
   }
 
@@ -3063,29 +3073,11 @@ function handleBehindHouseCommand(event) {
     return null;
   }
 
-  if (paymentAccountRequested && !behindHouseRequested) {
-    return {
-      type: 'group_payment_account',
-      link: '',
-      replyTexts: [buildBehindHousePaymentText()],
-      replyMessages: []
-    };
-  }
-
-  if (!LINE_OFFICIAL_ACCOUNT_URL) {
-    return {
-      type: 'behind_house',
-      link: '',
-      replyTexts: [],
-      replyMessages: []
-    };
-  }
-
   return {
-    type: 'behind_house',
-    link: LINE_OFFICIAL_ACCOUNT_URL,
+    type: paymentAccountRequested && !behindHouseRequested ? 'group_payment_account' : 'behind_house',
+    link: LINE_OFFICIAL_ACCOUNT_URL || '',
     replyTexts: [buildBehindHousePaymentText()],
-    replyMessages: [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)]
+    replyMessages: LINE_OFFICIAL_ACCOUNT_URL ? [buildBehindHouseFlex(LINE_OFFICIAL_ACCOUNT_URL)] : []
   };
 }
 
@@ -3600,7 +3592,7 @@ function handleQueueLookupCommand(event) {
     type: 'queue_lookup',
     found: Boolean(queueList),
     queueList,
-    replyTexts: [queueList ? buildQueueSummary(source.groupId) : 'ยังไม่มีคิว']
+    replyTexts: [queueList ? buildQueueSummary(source.groupId) : NO_QUEUE_REPLY]
   };
 }
 
@@ -3669,13 +3661,16 @@ function handleQueueAdminCommand(event) {
 
   const nowTimestamp = event.timestamp || Date.now();
   if (parseFinishQueueCommand(messageText)) {
+    const queueSummary = buildQueueSummary(source.groupId);
     const queueFinishedReply = buildQueueFinishedReply();
+    clearBuilderPriceRepeat(source.groupId);
+    clearQueueListForGroup(source.groupId);
     return {
       type: 'queue_day_finished',
       round: getLatestRoundForGroup(source.groupId),
       queueFinished: true,
       queueFinishedReply,
-      replyTexts: [buildQueueSummary(source.groupId), queueFinishedReply]
+      replyTexts: [queueSummary, queueFinishedReply]
     };
   }
 
@@ -3762,6 +3757,7 @@ function handleQueueAdminCommand(event) {
     };
 
     upsertRound(closedRound);
+    clearBuilderPriceRepeat(source.groupId);
     return {
       type: 'round_closed',
       round: closedRound,

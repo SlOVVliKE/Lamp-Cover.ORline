@@ -1551,7 +1551,7 @@ test('replies with the queue card format after setting the builder price', async
   }
 });
 
-test('repeats the open queue card by push and updates it after builder price is set', async () => {
+test('repeats the open queue card by push and stops immediately after close', async () => {
   const pushRequests = [];
   const lineServer = await startHttpMock(async (req, res) => {
     const chunks = [];
@@ -1597,49 +1597,19 @@ test('repeats the open queue card by push and updates it after builder price is 
       }
     ]);
 
+    const countBeforeClose = pushRequests.length;
+
     await postWebhook(server.baseUrl, [
       {
         type: 'message',
         source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
         message: { type: 'text', id: 'm-repeat-builder-close', text: 'ปิด' },
         timestamp: 1710000201000
-      },
-      {
-        type: 'message',
-        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-repeat-builder-price', text: 'ราคาช่าง 200-250' },
-        timestamp: 1710000202000
       }
     ]);
 
-    await waitForCondition(
-      () => pushRequests.some((request) => request.messages?.[0]?.text === 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀'),
-      400,
-      15
-    );
-    assert.equal(
-      pushRequests.some((request) => request.messages?.[0]?.text === 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀'),
-      true
-    );
-
-    await postWebhook(server.baseUrl, [
-      {
-        type: 'message',
-        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-repeat-builder-result-1', text: 'แจ้งผล 330' },
-        timestamp: 1710000203000
-      },
-      {
-        type: 'message',
-        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-repeat-builder-result-2', text: 'แจ้งผล 330' },
-        timestamp: 1710000204000
-      }
-    ]);
-
-    const countAfterResult = pushRequests.length;
     await delay(80);
-    assert.equal(pushRequests.length, countAfterResult);
+    assert.equal(pushRequests.length, countBeforeClose);
   } finally {
     await server.stop();
     await lineServer.stop();
@@ -2423,7 +2393,7 @@ test('replies that no queue exists from queue lookup keywords', async () => {
     const queueLookupLog = logs.find((log) => log.queueLookupRequested);
     assert.ok(queueLookupLog);
     assert.equal(queueLookupLog.queueLookupFound, false);
-    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, ['ยังไม่มีคิว']);
+    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, ['ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀']);
   } finally {
     await server.stop();
   }
@@ -2584,7 +2554,7 @@ test('admin can send the final queue command to show the day summary and thanks'
       {
         type: 'message',
         source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Uadmin' },
-        message: { type: 'text', id: 'm-manual-finish-command', text: 'ปิดคิวสุดท้าย' },
+        message: { type: 'text', id: 'm-manual-finish-command', text: 'สิ้นสุด' },
         timestamp: 1710000075000
       }
     ]);
@@ -2597,6 +2567,23 @@ test('admin can send the final queue command to show the day summary and thanks'
     assert.match(finishLog.queueReplyTexts[0], /ศราช 350-380 400✅/);
     assert.match(finishLog.queueReplyTexts[1], /^❌จบการรายงาน/);
     assert.match(finishLog.queueReplyTexts[1], /ส่งเลขบัญชีไว้หลังบ้านได้เลยนะครับ/);
+
+    const queueListsAfterFinish = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueListsAfterFinish.some((queueList) => queueList.groupId === 'Gmanual-finish'), false);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmanual-finish', userId: 'Umember' },
+        message: { type: 'text', id: 'm-manual-finish-lookup', text: 'คิวจุด' },
+        timestamp: 1710000076000
+      }
+    ]);
+
+    const lookupLogs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const lookupLog = lookupLogs.find((log) => log.queueLookupRequested && log.groupId === 'Gmanual-finish');
+    assert.equal(lookupLog.queueLookupFound, false);
+    assert.deepEqual(lookupLog.queueLookupReplyTexts, ['ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀']);
   } finally {
     await server.stop();
   }
@@ -2839,7 +2826,9 @@ test('replies with payment account details from group account keywords', async (
       assert.match(log.behindHouseReplyTexts[0], /9160581964 กรุงเทพ/);
       assert.match(log.behindHouseReplyTexts[0], /ภาณุเดช กุมแก้ว/);
       assert.match(log.behindHouseReplyTexts[0], /บัญชีนี้เท่านั้น/);
-      assert.deepEqual(log.behindHouseReplyMessages, []);
+      assert.equal(log.behindHouseReplyMessages.length, 1);
+      assert.equal(log.behindHouseReplyMessages[0].type, 'flex');
+      assert.match(log.behindHouseReplyMessages[0].altText, /หลังบ้าน/);
     }
   } finally {
     await server.stop();
@@ -2937,11 +2926,13 @@ test('replies with payment account details from private account keywords', async
     assert.equal(accountLogs.length, 5);
 
     for (const log of accountLogs) {
-      assert.equal(log.creditReplyMessages.length, 1);
+      assert.equal(log.creditReplyMessages.length, 2);
       assert.match(log.creditReplyMessages[0], /ช่องทางชำระเงิน/);
       assert.match(log.creditReplyMessages[0], /9160581964 กรุงเทพ/);
       assert.match(log.creditReplyMessages[0], /ภาณุเดช กุมแก้ว/);
       assert.match(log.creditReplyMessages[0], /บัญชีนี้เท่านั้น/);
+      assert.equal(log.creditReplyMessages[1].type, 'flex');
+      assert.match(log.creditReplyMessages[1].altText, /หลังบ้าน/);
     }
   } finally {
     await server.stop();
