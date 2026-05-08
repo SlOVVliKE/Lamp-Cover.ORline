@@ -25,6 +25,11 @@ const PAYMENT_ACCOUNT_BANK = process.env.PAYMENT_ACCOUNT_BANK || 'กรุง�
 const PAYMENT_ACCOUNT_NAME = process.env.PAYMENT_ACCOUNT_NAME || 'ภาณุเดช กุมแก้ว';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
+const CREDITS_ADMIN_USERNAME = process.env.CREDITS_ADMIN_USERNAME || 'Admin';
+const CREDITS_ADMIN_PASSWORD = process.env.CREDITS_ADMIN_PASSWORD || 'admin123';
+const CREDITS_ADMIN_COOKIE_NAME = 'lamp_credits_admin';
+const CREDITS_ADMIN_SESSION_SECRET =
+  process.env.CREDITS_ADMIN_SESSION_SECRET || LINE_CHANNEL_SECRET || CREDITS_ADMIN_PASSWORD;
 const LOG_FILE = path.join(__dirname, 'logs.json');
 const ADMIN_FILE = path.join(__dirname, 'admins.json');
 const MESSAGE_FILE = path.join(__dirname, 'messages.json');
@@ -251,6 +256,83 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function parseCookies(cookieHeader) {
+  return String(cookieHeader || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const separatorIndex = part.indexOf('=');
+      if (separatorIndex < 0) return cookies;
+
+      const key = part.slice(0, separatorIndex).trim();
+      const value = part.slice(separatorIndex + 1).trim();
+      cookies[key] = decodeURIComponent(value);
+      return cookies;
+    }, {});
+}
+
+function getCreditsAdminAuthToken() {
+  return crypto
+    .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
+    .update(`${CREDITS_ADMIN_USERNAME}:${CREDITS_ADMIN_PASSWORD}`)
+    .digest('hex');
+}
+
+function getCreditsAdminUserToken(userId) {
+  return crypto
+    .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
+    .update(`credit-user:${userId}`)
+    .digest('hex')
+    .slice(0, 40);
+}
+
+function getCreditUserIdFromAdminToken(userToken) {
+  const token = String(userToken || '').trim();
+  if (!token) return '';
+
+  const credit = readCredits().find((row) => safeStringEqual(getCreditsAdminUserToken(row.userId), token));
+  return credit?.userId || '';
+}
+
+function safeStringEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isCreditsAdminAuthenticated(req) {
+  const cookies = parseCookies(req.get('cookie'));
+  return safeStringEqual(cookies[CREDITS_ADMIN_COOKIE_NAME], getCreditsAdminAuthToken());
+}
+
+function setCreditsAdminCookie(res) {
+  const maxAgeSeconds = 12 * 60 * 60;
+  res.setHeader(
+    'Set-Cookie',
+    `${CREDITS_ADMIN_COOKIE_NAME}=${encodeURIComponent(getCreditsAdminAuthToken())}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax`
+  );
+}
+
+function clearCreditsAdminCookie(res) {
+  res.setHeader(
+    'Set-Cookie',
+    `${CREDITS_ADMIN_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`
+  );
+}
+
+function requireCreditsAdminAuth(req, res, next) {
+  if (isCreditsAdminAuthenticated(req)) {
+    return next();
+  }
+
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ success: false, error: 'unauthorized' });
+  }
+
+  return res.redirect('/credits/login');
 }
 
 function formatDate(timestamp) {
@@ -1037,6 +1119,7 @@ function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
     amount: totalAmount,
     rawText,
     messageId: event.message?.id || '',
+    displayName: getEventDisplayName(event),
     balanceAfter: nextBalance,
     timestamp: nowTimestamp,
     time: formatDate(nowTimestamp),
@@ -1531,6 +1614,26 @@ function buildCreditAddedFlex(amount, snapshot) {
       titleColor: '#22C55E',
       bodyColor: '#111827',
       subtitle: 'ตรวจสอบโดยระบบ',
+      amount: formatPoints(amount),
+      rows: [
+        flexRow('เครดิตที่ได้รับ', `+${formatPoints(amount)}`, '#22C55E'),
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B')
+      ],
+      footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
+    })
+  };
+}
+
+function buildManualCreditAddedFlex(amount, snapshot) {
+  return {
+    type: 'flex',
+    altText: `เติมเครดิตสำเร็จ +${formatPoints(amount)}`,
+    contents: buildCreditBubble({
+      title: '✓ เติมเครดิตสำเร็จ',
+      titleColor: '#22C55E',
+      bodyColor: '#111827',
+      subtitle: 'เติมโดยแอดมิน',
       amount: formatPoints(amount),
       rows: [
         flexRow('เครดิตที่ได้รับ', `+${formatPoints(amount)}`, '#22C55E'),
@@ -2141,6 +2244,27 @@ async function getLineGroupMemberProfile(groupId, userId) {
   return response.json();
 }
 
+async function getLineUserProfile(userId) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || !userId) {
+    return null;
+  }
+
+  const response = await fetch(
+    `https://api.line.me/v2/bot/profile/${encodeURIComponent(userId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json();
+}
+
 function verifyLineSignature(req, res, next) {
   // Skip signature verification when the secret is not set for local testing.
   if (!LINE_CHANNEL_SECRET) {
@@ -2189,6 +2313,33 @@ function normalizeDisplayName(value) {
 
 function getEventDisplayName(event) {
   return normalizeDisplayName(event?.source?.displayName || event?.displayName || '');
+}
+
+function findKnownDisplayNameByUserId(userId) {
+  if (!userId) return '';
+
+  const credit = readCredits().find((row) => row.userId === userId);
+  const creditDisplayName = (credit?.transactions || [])
+    .map((transaction) => normalizeDisplayName(transaction.displayName))
+    .find(Boolean);
+  if (creditDisplayName) return creditDisplayName;
+
+  const messageDisplayName = readMessages()
+    .filter((message) => message.userId === userId)
+    .map((message) => normalizeDisplayName(message.displayName))
+    .find(Boolean);
+  if (messageDisplayName) return messageDisplayName;
+
+  const wound = readWounds().find((row) => row.openerUserId === userId || row.accepterUserId === userId);
+  if (wound?.openerUserId === userId) return normalizeDisplayName(wound.openerDisplayName);
+  if (wound?.accepterUserId === userId) return normalizeDisplayName(wound.accepterDisplayName);
+
+  return '';
+}
+
+async function resolveCreditDisplayName(userId) {
+  const profile = await getLineUserProfile(userId).catch(() => null);
+  return normalizeDisplayName(profile?.displayName) || findKnownDisplayNameByUserId(userId) || 'ไม่พบชื่อผู้ใช้';
 }
 
 async function resolveGroupMemberDisplayName(groupId, userId, trackedMessage = null) {
@@ -3629,6 +3780,7 @@ app.post(
 );
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 app.get('/', (req, res) => {
   const webhookUrl = `${req.protocol}://${req.get('host')}/webhook`;
@@ -4486,22 +4638,147 @@ app.get('/queue-lists', (req, res) => {
 </html>`);
 });
 
-app.get('/credits', (req, res) => {
-  const credits = readCredits();
-  const rows = credits
-    .map((credit) => {
-      const latestTransaction = credit.transactions[0] || {};
+function buildCreditsLoginPage(hasError = false) {
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Credits Login</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      color: #111827;
+      background: #eef2f7;
+    }
+    main {
+      width: 100%;
+      max-width: 390px;
+      padding: 22px;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.10);
+    }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    p { margin: 0 0 18px; color: #6b7280; }
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      color: #374151;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    input {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 16px;
+    }
+    button {
+      width: 100%;
+      min-height: 48px;
+      margin-top: 18px;
+      border: 0;
+      border-radius: 10px;
+      color: #ffffff;
+      background: #047857;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .error {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: #991b1b;
+      background: #fee2e2;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LINE Credits</h1>
+    <p>เข้าสู่ระบบสำหรับแอดมิน</p>
+    ${hasError ? '<div class="error">รหัสไม่ถูกต้อง</div>' : ''}
+    <form method="post" action="/credits/login">
+      <label for="username">ชื่อผู้ใช้</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">รหัสผ่าน</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">เข้าสู่ระบบ</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
 
-      return `<tr>
-        <td>${escapeHtml(credit.updatedTime)}</td>
-        <td>${escapeHtml(credit.userId)}</td>
-        <td>${escapeHtml(formatPoints(credit.balance))}</td>
-        <td>${escapeHtml(formatPoints(credit.totalAdded))}</td>
-        <td>${escapeHtml(credit.transactions.length)}</td>
-        <td>${escapeHtml(latestTransaction.rawText || '')}</td>
-      </tr>`;
+app.get('/credits/login', (req, res) => {
+  if (isCreditsAdminAuthenticated(req)) {
+    return res.redirect('/credits');
+  }
+
+  return res.send(buildCreditsLoginPage(false));
+});
+
+app.post('/credits/login', (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+
+  if (username === CREDITS_ADMIN_USERNAME && password === CREDITS_ADMIN_PASSWORD) {
+    setCreditsAdminCookie(res);
+    return res.redirect('/credits');
+  }
+
+  return res.status(401).send(buildCreditsLoginPage(true));
+});
+
+app.post('/credits/logout', (req, res) => {
+  clearCreditsAdminCookie(res);
+  res.redirect('/credits/login');
+});
+
+app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
+  const credits = readCredits();
+  const creditCards = await Promise.all(
+    credits.map(async (credit, index) => {
+      const displayName = await resolveCreditDisplayName(credit.userId);
+      const userToken = getCreditsAdminUserToken(credit.userId);
+
+      return `<article class="credit-card">
+        <div class="user-row">
+          <div class="avatar">${escapeHtml(displayName.slice(0, 1) || String(index + 1))}</div>
+          <div>
+            <div class="user-name">${escapeHtml(displayName)}</div>
+            <div class="user-sub">ผู้ใช้ลำดับ ${index + 1}</div>
+          </div>
+        </div>
+        <form class="credit-form">
+          <input type="hidden" name="userKey" value="${escapeHtml(userToken)}">
+          <label>
+            จำนวนเครดิต
+            <input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="เช่น 500" required>
+          </label>
+          <label>
+            หมายเหตุ
+            <input name="note" type="text" maxlength="80" placeholder="เช่น เติมมือ">
+          </label>
+          <button type="submit">เติมเครดิต</button>
+          <div class="form-status" aria-live="polite"></div>
+        </form>
+      </article>`;
     })
-    .join('');
+  );
 
   res.send(`<!doctype html>
 <html lang="th">
@@ -4510,131 +4787,210 @@ app.get('/credits', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LINE Credits</title>
   <style>
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: Arial, sans-serif;
-      color: #1f2937;
-      background: #f3f4f6;
+      color: #111827;
+      background: #eef2f7;
     }
     main {
-      max-width: 1180px;
-      margin: 32px auto;
-      padding: 0 20px 40px;
+      width: 100%;
+      max-width: 430px;
+      margin: 0 auto;
+      padding: 16px 14px 28px;
     }
     .topbar {
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 18px;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 14px;
     }
     h1 {
       margin: 0;
       color: #111827;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+    .hint {
+      margin: 6px 0 0;
+      color: #6b7280;
+      font-size: 13px;
     }
     .actions {
-      display: flex;
-      gap: 10px;
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 8px;
     }
-    button, a.button {
+    .button, .logout-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
       border: 0;
-      border-radius: 6px;
-      padding: 10px 14px;
+      border-radius: 9px;
+      padding: 8px 10px;
       color: #ffffff;
       background: #047857;
+      font-size: 13px;
       font-weight: 700;
       cursor: pointer;
       text-decoration: none;
+      white-space: nowrap;
     }
-    button.danger {
-      background: #b91c1c;
+    .logout-button { background: #374151; }
+    .cards {
+      display: grid;
+      gap: 12px;
     }
-    .hint {
-      margin: 0 0 18px;
-      color: #4b5563;
-    }
-    code {
-      padding: 2px 6px;
-      background: #e5e7eb;
-      border-radius: 4px;
-    }
-    .table-wrap {
-      overflow-x: auto;
+    .credit-card {
+      padding: 14px;
       background: #ffffff;
       border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+      border-radius: 12px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 920px;
+    .user-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
     }
-    th, td {
-      padding: 12px 14px;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
-      vertical-align: top;
-      font-size: 14px;
+    .avatar {
+      width: 42px;
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      color: #ffffff;
+      background: #047857;
+      font-size: 20px;
+      font-weight: 700;
+      flex: 0 0 auto;
     }
-    th {
-      background: #f9fafb;
+    .user-name {
+      font-size: 18px;
+      font-weight: 800;
+      word-break: break-word;
+    }
+    .user-sub {
+      margin-top: 2px;
+      color: #6b7280;
+      font-size: 12px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
       color: #374151;
       font-size: 13px;
-      text-transform: uppercase;
+      font-weight: 700;
     }
-    tr:last-child td {
-      border-bottom: 0;
+    input {
+      width: 100%;
+      min-height: 42px;
+      margin-top: 6px;
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+      padding: 9px 10px;
+      font-size: 16px;
     }
+    .credit-form button {
+      width: 100%;
+      min-height: 44px;
+      margin-top: 12px;
+      border: 0;
+      border-radius: 9px;
+      color: #ffffff;
+      background: #16a34a;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .credit-form button:disabled {
+      opacity: 0.65;
+      cursor: wait;
+    }
+    .form-status {
+      min-height: 20px;
+      margin-top: 8px;
+      color: #047857;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .form-status.error { color: #b91c1c; }
     .empty {
-      padding: 28px;
+      padding: 28px 14px;
       color: #6b7280;
       text-align: center;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
     }
   </style>
 </head>
 <body>
   <main>
     <div class="topbar">
-      <h1>LINE Credits</h1>
+      <div>
+        <h1>LINE Credits</h1>
+        <p class="hint">เติมมือเฉพาะกรณีสลิปเติมไม่เข้า</p>
+      </div>
       <div class="actions">
         <a class="button" href="/credits">Refresh</a>
         <a class="button" href="/logs">Logs</a>
-        <button class="danger" type="button" onclick="clearCredits()">Clear Credits</button>
+        <form method="post" action="/credits/logout">
+          <button class="logout-button" type="submit">Logout</button>
+        </form>
       </div>
     </div>
-    <p class="hint">เติมเครดิตด้วยการส่งรูปสลิปในแชทส่วนตัวเท่านั้น คำสั่งส่วนตัว: <code>เช็คยอดเงิน</code>, <code>แผลที่กำลังติด</code>, <code>ถอนยอดเงิน</code></p>
-    <div class="table-wrap">
-      ${
-        rows
-          ? `<table>
-              <thead>
-                <tr>
-                  <th>Updated</th>
-                  <th>User ID</th>
-                  <th>Balance</th>
-                  <th>Total Added</th>
-                  <th>Transactions</th>
-                  <th>Latest Command</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>`
-          : '<div class="empty">No credits yet.</div>'
-      }
-    </div>
+    <section class="cards">
+      ${creditCards.length ? creditCards.join('') : '<div class="empty">ยังไม่มีผู้ใช้เครดิต</div>'}
+    </section>
   </main>
   <script>
-    async function clearCredits() {
-      if (!confirm('Clear all credits?')) return;
-
-      const response = await fetch('/api/credits', { method: 'DELETE' });
-      if (response.ok) {
-        window.location.reload();
-      } else {
-        alert('Unable to clear credits.');
-      }
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString('th-TH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
     }
+
+    document.querySelectorAll('.credit-form').forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const button = form.querySelector('button');
+        const status = form.querySelector('.form-status');
+        const payload = Object.fromEntries(new FormData(form).entries());
+
+        button.disabled = true;
+        status.classList.remove('error');
+        status.textContent = 'กำลังเติมเครดิต...';
+
+        try {
+          const response = await fetch('/api/credits/manual', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const result = await response.json().catch(() => ({}));
+
+          if (!response.ok || !result.success) {
+            throw new Error(result.error || 'เติมเครดิตไม่สำเร็จ');
+          }
+
+          form.reset();
+          status.textContent = 'เติมสำเร็จ ยอดล่าสุด ' + formatNumber(result.balance);
+        } catch (error) {
+          status.classList.add('error');
+          status.textContent = error.message || 'เติมเครดิตไม่สำเร็จ';
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
   </script>
 </body>
 </html>`);
@@ -4694,6 +5050,66 @@ app.delete('/api/queue-lists', (req, res) => {
 
 app.get('/api/credits', (req, res) => {
   res.json(readCredits());
+});
+
+app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
+  const userId = getCreditUserIdFromAdminToken(req.body?.userKey);
+  const amount = Number(req.body?.amount);
+  const note = String(req.body?.note || '').trim();
+  const targetCredit = readCredits().find((credit) => credit.userId === userId);
+
+  if (!targetCredit) {
+    return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้นี้' });
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ success: false, error: 'จำนวนเครดิตไม่ถูกต้อง' });
+  }
+
+  const nowTimestamp = Date.now();
+  const displayName = await resolveCreditDisplayName(userId);
+  const manualEvent = {
+    type: 'manual_credit',
+    source: { type: 'web_admin', userId, displayName },
+    message: { id: `manual-credit-${nowTimestamp}-${crypto.randomBytes(4).toString('hex')}` },
+    timestamp: nowTimestamp
+  };
+  const rawText = note ? `Manual credit: ${note}` : 'Manual credit by admin';
+  const result = addCreditForUser(manualEvent, roundPoints(amount), rawText, {
+    type: 'manual_credit_added',
+    manual: true,
+    manualAdmin: CREDITS_ADMIN_USERNAME,
+    manualNote: note
+  });
+  const snapshot = getCreditSnapshot(userId);
+  const pushResponse = await pushToLine(userId, [buildManualCreditAddedFlex(amount, snapshot)]).catch(() => null);
+  const pushStatus = pushResponse ? (pushResponse.ok ? 'sent' : 'failed') : 'skipped';
+
+  writeLogs([
+    {
+      eventType: 'manual_credit_added',
+      sourceType: 'web_admin',
+      userId,
+      message: rawText,
+      timestamp: nowTimestamp,
+      time: formatDate(nowTimestamp),
+      creditAction: 'manual_credit_added',
+      creditAmount: roundPoints(amount),
+      creditBalance: result.credit.balance,
+      manualCreditDisplayName: displayName,
+      manualCreditPushStatus: pushStatus
+    },
+    ...readLogs()
+  ]);
+
+  return res.json({
+    success: true,
+    userId,
+    displayName,
+    amount: roundPoints(amount),
+    balance: result.credit.balance,
+    pushStatus
+  });
 });
 
 app.delete('/api/credits', (req, res) => {

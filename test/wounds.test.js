@@ -2991,6 +2991,87 @@ test('credit flex cards do not attach quick reply buttons or point labels', () =
   assert.equal(source.includes('แต้ม'), false);
 });
 
+test('credits page requires login and supports manual top up by user name', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    fs.writeFileSync(CREDIT_FILE, JSON.stringify([
+      {
+        userId: 'UmanualPageUser',
+        balance: 10,
+        totalAdded: 10,
+        transactions: [
+          {
+            id: 'seed-manual-page',
+            type: 'test_credit_seed',
+            amount: 10,
+            rawText: 'seed',
+            displayName: 'Bank Thirakan',
+            balanceAfter: 10,
+            timestamp: 1710000000000,
+            time: '2024-03-09T16:00:00.000Z'
+          }
+        ],
+        updatedTimestamp: 1710000000000,
+        updatedTime: '2024-03-09T16:00:00.000Z'
+      }
+    ], null, 2), 'utf8');
+
+    const unauthPage = await fetch(`${server.baseUrl}/credits`, { redirect: 'manual' });
+    assert.equal(unauthPage.status, 302);
+    assert.match(unauthPage.headers.get('location') || '', /\/credits\/login/);
+
+    const unauthManual = await fetch(`${server.baseUrl}/api/credits/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userKey: 'missing', amount: 50 })
+    });
+    assert.equal(unauthManual.status, 401);
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    assert.equal(login.status, 302);
+
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+    assert.match(cookie, /lamp_credits_admin=/);
+
+    const page = await fetch(`${server.baseUrl}/credits`, { headers: { cookie } });
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(html, /Bank Thirakan/);
+    assert.doesNotMatch(html, /UmanualPageUser/);
+    assert.doesNotMatch(html, /Updated|User ID|Balance|Transactions|Latest Command/);
+
+    const userKey = html.match(/name="userKey" value="([^"]+)"/)?.[1] || '';
+    assert.ok(userKey);
+
+    const manual = await fetch(`${server.baseUrl}/api/credits/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ userKey, amount: 50, note: 'manual fallback' })
+    });
+    const manualBody = await manual.json();
+    assert.equal(manual.status, 200);
+    assert.equal(manualBody.success, true);
+    assert.equal(manualBody.balance, 60);
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const credit = credits.find((row) => row.userId === 'UmanualPageUser');
+    assert.equal(credit.balance, 60);
+    assert.equal(credit.transactions[0].type, 'manual_credit_added');
+    assert.equal(credit.transactions[0].manualNote, 'manual fallback');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('reports JSON storage when MongoDB is not configured', async () => {
   const server = await startServer();
 
