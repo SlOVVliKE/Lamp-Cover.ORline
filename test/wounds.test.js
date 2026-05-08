@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const SERVER_READY_TIMEOUT_MS = 15000;
 const CREDIT_FILE = 'credits.json';
+const WITHDRAWAL_FILE = 'withdrawals.json';
 let nextPort = 3300 + Math.floor(Math.random() * 500);
 
 function delay(ms) {
@@ -2965,7 +2966,7 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
         source: { type: 'user', userId: 'Ubuyer' },
         replyToken: 'reply-withdraw',
         message: { type: 'text', id: 'm-withdraw', text: 'ถอนยอดเงิน' },
-        timestamp: 1710000006000
+        timestamp: Date.parse('2024-03-09T09:00:00.000Z')
       }
     ]);
 
@@ -2980,6 +2981,116 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
     assert.equal(activeLog.activeWoundAmount, 100);
     assert.equal(withdrawLog.withdrawableBalance, 20);
   } finally {
+    await server.stop();
+  }
+});
+
+test('after 18:00 withdraw button opens a request form and stores withdrawal requests', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+
+    fs.writeFileSync(CREDIT_FILE, JSON.stringify([
+      {
+        userId: 'UwithdrawUser',
+        balance: 300,
+        totalAdded: 300,
+        transactions: [
+          {
+            id: 'seed-withdraw-user',
+            type: 'test_credit_seed',
+            amount: 300,
+            rawText: 'seed',
+            displayName: 'Bank Thirakan',
+            pictureUrl: 'https://example.com/bank.jpg',
+            balanceAfter: 300,
+            timestamp: 1710000000000,
+            time: '2024-03-09T16:00:00.000Z'
+          }
+        ],
+        updatedTimestamp: 1710000000000,
+        updatedTime: '2024-03-09T16:00:00.000Z'
+      }
+    ], null, 2), 'utf8');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UwithdrawUser' },
+        replyToken: 'reply-withdraw-form',
+        message: { type: 'text', id: 'm-withdraw-form', text: 'ถอนยอดเงิน' },
+        timestamp: Date.parse('2024-03-09T11:05:00.000Z')
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const withdrawLog = logs.find((log) => log.creditAction === 'withdraw_form');
+    assert.ok(withdrawLog);
+    assert.equal(withdrawLog.withdrawableBalance, 300);
+
+    const actions = collectFlexActions(withdrawLog.creditReplyMessages);
+    const formAction = actions.find((action) => action.type === 'uri' && /\/withdraw\/request\?token=/.test(action.uri || ''));
+    assert.ok(formAction);
+
+    const formPage = await fetch(formAction.uri);
+    const formHtml = await formPage.text();
+    assert.equal(formPage.status, 200);
+    assert.match(formHtml, /name="bankName"/);
+    assert.match(formHtml, /name="accountNumber"/);
+    assert.match(formHtml, /name="amount"/);
+    assert.match(formHtml, /Bank Thirakan/);
+
+    const invalidSubmit = await fetch(`${server.baseUrl}/withdraw/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: new URL(formAction.uri).searchParams.get('token') || '',
+        bankName: 'กรุงเทพ',
+        accountNumber: '1234567890',
+        amount: '301'
+      })
+    });
+    assert.equal(invalidSubmit.status, 400);
+
+    const validSubmit = await fetch(`${server.baseUrl}/withdraw/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: new URL(formAction.uri).searchParams.get('token') || '',
+        bankName: 'กรุงเทพ',
+        accountNumber: '1234567890',
+        amount: '300'
+      }),
+      redirect: 'manual'
+    });
+    assert.equal(validSubmit.status, 302);
+    assert.match(validSubmit.headers.get('location') || '', /\/withdraw\/request\/success/);
+
+    const unauthWithdrawalsPage = await fetch(`${server.baseUrl}/withdrawals`, { redirect: 'manual' });
+    assert.equal(unauthWithdrawalsPage.status, 302);
+    assert.match(unauthWithdrawalsPage.headers.get('location') || '', /\/credits\/login/);
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+
+    const withdrawalsPage = await fetch(`${server.baseUrl}/withdrawals`, { headers: { cookie } });
+    const withdrawalsHtml = await withdrawalsPage.text();
+    assert.equal(withdrawalsPage.status, 200);
+    assert.match(withdrawalsHtml, /ถอนเครดิต/);
+    assert.match(withdrawalsHtml, /Bank Thirakan/);
+    assert.match(withdrawalsHtml, /กรุงเทพ/);
+    assert.match(withdrawalsHtml, /1234567890/);
+    assert.match(withdrawalsHtml, /300\.00/);
+  } finally {
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
     await server.stop();
   }
 });

@@ -7,6 +7,7 @@ const express = require('express');
 const { MongoClient } = require('mongodb');
 
 const app = express();
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
@@ -37,6 +38,7 @@ const WOUND_FILE = path.join(__dirname, 'wounds.json');
 const ROUND_FILE = path.join(__dirname, 'rounds.json');
 const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
 const CREDIT_FILE = path.join(__dirname, 'credits.json');
+const WITHDRAWAL_FILE = path.join(__dirname, 'withdrawals.json');
 const MAX_LOGS = 1000;
 const MAX_ADMINS = 1000;
 const MAX_MESSAGES = 3000;
@@ -44,9 +46,12 @@ const MAX_WOUNDS = 1000;
 const MAX_ROUNDS = 1000;
 const MAX_QUEUE_LISTS = 200;
 const MAX_CREDITS = 5000;
+const MAX_WITHDRAWALS = 2000;
 const MAX_CREDIT_TRANSACTIONS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
+const WITHDRAWAL_OPEN_HOUR = 18;
+const WITHDRAWAL_TOKEN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MONGO_COLLECTION_BY_FILE = new Map([
   [LOG_FILE, 'lamp_logs'],
   [ADMIN_FILE, 'lamp_admins'],
@@ -54,7 +59,8 @@ const MONGO_COLLECTION_BY_FILE = new Map([
   [WOUND_FILE, 'lamp_wounds'],
   [ROUND_FILE, 'lamp_rounds'],
   [QUEUE_LIST_FILE, 'lamp_queue_lists'],
-  [CREDIT_FILE, 'lamp_credits']
+  [CREDIT_FILE, 'lamp_credits'],
+  [WITHDRAWAL_FILE, 'lamp_withdrawals']
 ]);
 const MONGO_SLIP_COLLECTION = 'lamp_slips';
 let mongoClient = null;
@@ -249,6 +255,14 @@ function writeCredits(credits) {
   writeJsonArray(CREDIT_FILE, sortCredits(credits), MAX_CREDITS);
 }
 
+function readWithdrawals() {
+  return sortWithdrawals(readJsonArray(WITHDRAWAL_FILE, 'withdrawals.json'));
+}
+
+function writeWithdrawals(withdrawals) {
+  writeJsonArray(WITHDRAWAL_FILE, sortWithdrawals(withdrawals), MAX_WITHDRAWALS);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -295,6 +309,41 @@ function getCreditUserIdFromAdminToken(userToken) {
 
   const credit = readCredits().find((row) => safeStringEqual(getCreditsAdminUserToken(row.userId), token));
   return credit?.userId || '';
+}
+
+function signWithdrawalTokenPayload(payload) {
+  return crypto
+    .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest('hex')
+    .slice(0, 48);
+}
+
+function createWithdrawalRequestToken(userId, timestamp = Date.now()) {
+  const payload = Buffer.from(JSON.stringify({ userId, timestamp }), 'utf8').toString('base64url');
+  return `${payload}.${signWithdrawalTokenPayload(payload)}`;
+}
+
+function parseWithdrawalRequestToken(token) {
+  const [payload, signature] = String(token || '').trim().split('.');
+  if (!payload || !signature || !safeStringEqual(signWithdrawalTokenPayload(payload), signature)) return null;
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const timestamp = Number(parsed.timestamp);
+    const userId = String(parsed.userId || '').trim();
+    if (!userId || !Number.isFinite(timestamp)) return null;
+    if (Date.now() - timestamp > WITHDRAWAL_TOKEN_MAX_AGE_MS) return null;
+
+    return { userId, timestamp };
+  } catch (error) {
+    return null;
+  }
+}
+
+function getPublicBaseUrl(req) {
+  const configuredBaseUrl = String(process.env.PUBLIC_BASE_URL || process.env.APP_BASE_URL || '').replace(/\/+$/, '');
+  return configuredBaseUrl || `${req.protocol}://${req.get('host')}`;
 }
 
 function safeStringEqual(left, right) {
@@ -415,6 +464,29 @@ function sortCredits(credits) {
     .map(normalizeCreditRow)
     .filter((credit) => credit.userId)
     .sort((creditA, creditB) => (creditB.updatedTimestamp || 0) - (creditA.updatedTimestamp || 0));
+}
+
+function normalizeWithdrawalRow(row) {
+  return {
+    id: row.id || '',
+    userId: row.userId || '',
+    displayName: normalizeDisplayName(row.displayName) || row.displayName || '',
+    pictureUrl: normalizePictureUrl(row.pictureUrl),
+    bankName: String(row.bankName || '').trim(),
+    accountNumber: String(row.accountNumber || '').trim(),
+    amount: roundPoints(row.amount),
+    availableBalance: roundPoints(row.availableBalance),
+    status: row.status || 'pending',
+    createdTimestamp: row.createdTimestamp || row.timestamp || 0,
+    createdTime: row.createdTime || row.time || ''
+  };
+}
+
+function sortWithdrawals(withdrawals) {
+  return [...withdrawals]
+    .map(normalizeWithdrawalRow)
+    .filter((withdrawal) => withdrawal.id && withdrawal.userId)
+    .sort((withdrawalA, withdrawalB) => (withdrawalB.createdTimestamp || 0) - (withdrawalA.createdTimestamp || 0));
 }
 
 function escapeRegExp(value) {
@@ -1555,6 +1627,20 @@ function flexPostbackButton(label, data, color = '#374151') {
   };
 }
 
+function flexUriButton(label, uri, color = '#374151') {
+  return {
+    type: 'button',
+    style: 'primary',
+    color,
+    height: 'sm',
+    action: {
+      type: 'uri',
+      label,
+      uri
+    }
+  };
+}
+
 function buildCreditBubble({
   title,
   titleColor,
@@ -1726,6 +1812,43 @@ function buildWithdrawFlex(snapshot) {
       footer: 'ยอดถอนได้ = ยอดคงเหลือ - ยอดที่กำลังใช้อยู่'
     })
   };
+}
+
+function buildWithdrawalRequestFlex(snapshot, formUrl) {
+  return {
+    type: 'flex',
+    altText: `กรอกข้อมูลถอนเครดิต ${formatPoints(snapshot.withdrawableBalance)}`,
+    contents: buildCreditBubble({
+      title: '🏧 ถอนเครดิต',
+      titleColor: '#EF4444',
+      bodyColor: '#EF4444',
+      subtitle: 'ยอดที่ถอนได้',
+      amount: formatPoints(snapshot.withdrawableBalance),
+      rows: [
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B'),
+        flexRow('แผลที่ค้าง', `${snapshot.activeWounds.length} รายการ`, '#EF4444')
+      ],
+      footer: 'กรอกข้อมูลธนาคาร เลขบัญชี และยอดถอน',
+      actionButtons: [
+        flexUriButton('กรอกข้อมูลถอนเงิน', formUrl, '#EF4444')
+      ]
+    })
+  };
+}
+
+function getBangkokHour(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok',
+    hour: '2-digit',
+    hour12: false
+  }).formatToParts(new Date(timestamp));
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+  return Number.isFinite(hour) ? hour : 0;
+}
+
+function isWithdrawalRequestOpen(timestamp = Date.now()) {
+  return getBangkokHour(timestamp) >= WITHDRAWAL_OPEN_HOUR;
 }
 
 function buildWoundPostbackData(action, woundId, extras = {}) {
@@ -1968,7 +2091,7 @@ function buildCancelStatusFlex(wound, title, titleColor, statusText) {
   };
 }
 
-function handleCreditEvent(event) {
+function handleCreditEvent(event, publicBaseUrl = '') {
   if (event.type !== 'message' || event.message?.type !== 'text' || !event.source?.userId) {
     return null;
   }
@@ -2010,6 +2133,20 @@ function handleCreditEvent(event) {
       withdrawableBalance: snapshot.withdrawableBalance,
       activeWoundCount: snapshot.activeWounds.length,
       replyMessages: [buildActiveWoundsFlex(snapshot)]
+    };
+  }
+
+  if (keyword === 'withdraw' && isWithdrawalRequestOpen(event.timestamp || Date.now())) {
+    const token = createWithdrawalRequestToken(source.userId);
+    const formUrl = `${String(publicBaseUrl || '').replace(/\/+$/, '')}/withdraw/request?token=${encodeURIComponent(token)}`;
+
+    return {
+      type: 'withdraw_form',
+      creditBalance: snapshot.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      activeWoundCount: snapshot.activeWounds.length,
+      replyMessages: [buildWithdrawalRequestFlex(snapshot, formUrl)]
     };
   }
 
@@ -3530,6 +3667,7 @@ ensureJsonFile(WOUND_FILE);
 ensureJsonFile(ROUND_FILE);
 ensureJsonFile(QUEUE_LIST_FILE);
 ensureJsonFile(CREDIT_FILE);
+ensureJsonFile(WITHDRAWAL_FILE);
 
 // LINE signature verification needs the exact raw request body.
 app.post(
@@ -3543,6 +3681,7 @@ app.post(
       const bodyText = req.body ? req.body.toString('utf8') : '{}';
       const payload = bodyText ? JSON.parse(bodyText) : {};
       const events = Array.isArray(payload.events) ? payload.events : [];
+      const publicBaseUrl = getPublicBaseUrl(req);
 
       if (events.length > 0) {
         const newLogs = [];
@@ -3563,7 +3702,7 @@ app.post(
           const woundCancelAction = await handleWoundCancelPostback(event);
           const unsendAction = await handleUnsendEvent(event);
           const slipCreditAction = await handleSlipCreditEvent(event);
-          const creditAction = slipCreditAction || handleCreditEvent(event);
+          const creditAction = slipCreditAction || handleCreditEvent(event, publicBaseUrl);
 
           if (adminEntry) {
             logEntry.adminRegistered = true;
@@ -4771,6 +4910,210 @@ app.post('/credits/logout', (req, res) => {
   res.redirect('/credits/login');
 });
 
+app.get('/withdraw/request', async (req, res) => {
+  const token = String(req.query?.token || '');
+  const tokenData = parseWithdrawalRequestToken(token);
+  if (!tokenData) {
+    return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  const snapshot = getCreditSnapshot(tokenData.userId);
+  const profile = await resolveCreditProfile(tokenData.userId);
+
+  return res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ถอนเครดิต</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #111827;
+      background: #eef2f7;
+    }
+    main {
+      width: 100%;
+      max-width: 390px;
+      margin: 0 auto;
+      padding: 18px 12px 28px;
+    }
+    .card {
+      padding: 16px;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+    }
+    .user {
+      margin-bottom: 16px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+    .amount {
+      margin: 12px 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: #fef2f2;
+      color: #dc2626;
+      text-align: center;
+      font-size: 28px;
+      font-weight: 800;
+    }
+    label {
+      display: block;
+      margin-top: 12px;
+      color: #374151;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    input {
+      width: 100%;
+      min-height: 42px;
+      margin-top: 5px;
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+      padding: 9px 10px;
+      font-size: 16px;
+    }
+    button {
+      width: 100%;
+      min-height: 44px;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 9px;
+      color: #ffffff;
+      background: #dc2626;
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .hint {
+      margin-top: 10px;
+      color: #9ca3af;
+      font-size: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <form class="card" method="post" action="/withdraw/request">
+      <h1>ถอนเครดิต</h1>
+      <div class="user">${escapeHtml(profile.displayName)}</div>
+      <div>ยอดที่ถอนได้</div>
+      <div class="amount">${escapeHtml(formatPoints(snapshot.withdrawableBalance))}</div>
+      <input type="hidden" name="token" value="${escapeHtml(token)}">
+      <label>
+        ธนาคาร
+        <input name="bankName" type="text" required placeholder="เช่น กรุงเทพ">
+      </label>
+      <label>
+        เลขบัญชี
+        <input name="accountNumber" type="text" inputmode="numeric" required placeholder="เช่น 1234567890">
+      </label>
+      <label>
+        ยอดเครดิตที่ต้องการถอน
+        <input name="amount" type="number" inputmode="decimal" min="0.01" max="${escapeHtml(snapshot.withdrawableBalance)}" step="0.01" required placeholder="เช่น 300">
+      </label>
+      <button type="submit">ส่งคำขอถอน</button>
+      <div class="hint">ยอดถอนต้องไม่เกินยอดที่ถอนได้</div>
+    </form>
+  </main>
+</body>
+</html>`);
+});
+
+app.post('/withdraw/request', async (req, res) => {
+  const token = String(req.body?.token || '');
+  const tokenData = parseWithdrawalRequestToken(token);
+  if (!tokenData) {
+    return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  const bankName = String(req.body?.bankName || '').trim();
+  const accountNumber = String(req.body?.accountNumber || '').trim();
+  const amount = roundPoints(Number(req.body?.amount));
+  const snapshot = getCreditSnapshot(tokenData.userId);
+
+  if (!bankName || !accountNumber) {
+    return res.status(400).send('กรุณากรอกธนาคารและเลขบัญชี');
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0 || amount > snapshot.withdrawableBalance) {
+    return res.status(400).send('ยอดถอนต้องไม่เกินยอดเครดิตที่ถอนได้');
+  }
+
+  const profile = await resolveCreditProfile(tokenData.userId);
+  const nowTimestamp = Date.now();
+  const withdrawal = {
+    id: `withdraw-${nowTimestamp}-${crypto.randomBytes(4).toString('hex')}`,
+    userId: tokenData.userId,
+    displayName: profile.displayName,
+    pictureUrl: profile.pictureUrl,
+    bankName,
+    accountNumber,
+    amount,
+    availableBalance: snapshot.withdrawableBalance,
+    status: 'pending',
+    createdTimestamp: nowTimestamp,
+    createdTime: formatDate(nowTimestamp)
+  };
+
+  writeWithdrawals([withdrawal, ...readWithdrawals()]);
+  writeLogs([
+    {
+      eventType: 'withdrawal_requested',
+      sourceType: 'user',
+      userId: tokenData.userId,
+      message: `Withdraw ${amount} to ${bankName} ${accountNumber}`,
+      timestamp: nowTimestamp,
+      time: formatDate(nowTimestamp),
+      creditAction: 'withdrawal_requested',
+      creditAmount: amount,
+      creditBalance: snapshot.credit.balance,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      withdrawalId: withdrawal.id,
+      withdrawalBankName: bankName,
+      withdrawalAccountNumber: accountNumber
+    },
+    ...readLogs()
+  ]);
+
+  return res.redirect('/withdraw/request/success');
+});
+
+app.get('/withdraw/request/success', (req, res) => {
+  res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ส่งคำขอถอนแล้ว</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #eef2f7; color: #111827; }
+    main { max-width: 390px; margin: 0 auto; padding: 24px 12px; }
+    .card { padding: 22px; border-radius: 12px; background: #ffffff; text-align: center; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08); }
+    h1 { margin: 0 0 8px; color: #16a34a; font-size: 24px; }
+    p { margin: 0; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <h1>ส่งคำขอถอนแล้ว</h1>
+      <p>แอดมินจะตรวจสอบรายการถอนเครดิตให้ครับ</p>
+    </div>
+  </main>
+</body>
+</html>`);
+});
+
 app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
   const credits = readCredits();
   const creditCards = await Promise.all(
@@ -5100,6 +5443,199 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
 </html>`);
 });
 
+app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
+  const withdrawals = readWithdrawals();
+  const cards = withdrawals.map((withdrawal, index) => {
+    const avatar = withdrawal.pictureUrl
+      ? `<img class="avatar avatar-image" src="${escapeHtml(withdrawal.pictureUrl)}" alt="">`
+      : `<div class="avatar">${escapeHtml((withdrawal.displayName || String(index + 1)).slice(0, 1))}</div>`;
+
+    return `<article class="withdraw-card">
+      <div class="user-row">
+        ${avatar}
+        <div class="user-main">
+          <div class="user-name">${escapeHtml(withdrawal.displayName || 'ไม่พบชื่อผู้ใช้')}</div>
+          <div class="user-sub">${escapeHtml(withdrawal.createdTime || '-')}</div>
+        </div>
+        <div class="status">${escapeHtml(withdrawal.status || 'pending')}</div>
+      </div>
+      <div class="amount">${escapeHtml(formatPoints(withdrawal.amount))}</div>
+      <div class="detail-row"><span>ธนาคาร</span><strong>${escapeHtml(withdrawal.bankName)}</strong></div>
+      <div class="detail-row"><span>เลขบัญชี</span><strong>${escapeHtml(withdrawal.accountNumber)}</strong></div>
+      <div class="detail-row"><span>ยอดที่ถอนได้ตอนส่ง</span><strong>${escapeHtml(formatPoints(withdrawal.availableBalance))}</strong></div>
+    </article>`;
+  });
+
+  res.send(`<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ถอนเครดิต</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #111827;
+      background: #eef2f7;
+    }
+    main {
+      width: 100%;
+      max-width: 390px;
+      margin: 0 auto;
+      padding: 12px 10px 24px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+    .hint {
+      margin: 6px 0 0;
+      color: #6b7280;
+      font-size: 12px;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .button, .logout-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 9px;
+      color: #ffffff;
+      background: #047857;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .logout-button { background: #374151; }
+    .cards {
+      display: grid;
+      gap: 9px;
+    }
+    .withdraw-card {
+      padding: 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: #ffffff;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    }
+    .user-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 8px;
+    }
+    .avatar {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      color: #ffffff;
+      background: #dc2626;
+      font-size: 17px;
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+    .avatar-image {
+      display: block;
+      object-fit: cover;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+    }
+    .user-main {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .user-name {
+      font-size: 16px;
+      font-weight: 800;
+      word-break: break-word;
+    }
+    .user-sub {
+      margin-top: 2px;
+      color: #6b7280;
+      font-size: 11px;
+    }
+    .status {
+      padding: 4px 8px;
+      border-radius: 999px;
+      color: #92400e;
+      background: #fef3c7;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .amount {
+      margin: 6px 0 10px;
+      color: #dc2626;
+      font-size: 30px;
+      font-weight: 800;
+      text-align: center;
+    }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 7px 0;
+      border-top: 1px solid #f3f4f6;
+      color: #6b7280;
+      font-size: 13px;
+    }
+    .detail-row strong {
+      color: #111827;
+      text-align: right;
+      word-break: break-word;
+    }
+    .empty {
+      padding: 28px 14px;
+      color: #6b7280;
+      text-align: center;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>ถอนเครดิต</h1>
+        <p class="hint">รายการถอนจากผู้ใช้ใน LINE OA</p>
+      </div>
+      <div class="actions">
+        <a class="button" href="/withdrawals">Refresh</a>
+        <form method="post" action="/credits/logout">
+          <button class="logout-button" type="submit">Logout</button>
+        </form>
+      </div>
+    </div>
+    <section class="cards">
+      ${cards.length ? cards.join('') : '<div class="empty">ยังไม่มีรายการถอนเครดิต</div>'}
+    </section>
+  </main>
+</body>
+</html>`);
+});
+
 app.get('/api/logs', (req, res) => {
   res.json(readLogs());
 });
@@ -5154,6 +5690,15 @@ app.delete('/api/queue-lists', (req, res) => {
 
 app.get('/api/credits', (req, res) => {
   res.json(readCredits());
+});
+
+app.get('/api/withdrawals', requireCreditsAdminAuth, (req, res) => {
+  res.json(readWithdrawals());
+});
+
+app.delete('/api/withdrawals', requireCreditsAdminAuth, (req, res) => {
+  writeWithdrawals([]);
+  res.json({ success: true });
 });
 
 app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
