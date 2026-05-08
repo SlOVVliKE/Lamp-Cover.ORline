@@ -3089,6 +3089,125 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
     assert.match(withdrawalsHtml, /กรุงเทพ/);
     assert.match(withdrawalsHtml, /1234567890/);
     assert.match(withdrawalsHtml, /300\.00/);
+    assert.match(withdrawalsHtml, /เสร็จสิ้น/);
+    assert.match(withdrawalsHtml, /ยกเลิก/);
+    assert.match(withdrawalsHtml, /name="reason"/);
+
+    const [pendingWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
+    assert.equal(pendingWithdrawal.status, 'pending');
+
+    const complete = await fetch(`${server.baseUrl}/withdrawals/${encodeURIComponent(pendingWithdrawal.id)}/complete`, {
+      method: 'POST',
+      headers: { cookie },
+      redirect: 'manual'
+    });
+    assert.equal(complete.status, 302);
+    assert.match(complete.headers.get('location') || '', /\/withdrawals/);
+
+    const creditsAfterComplete = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const completedCredit = creditsAfterComplete.find((row) => row.userId === 'UwithdrawUser');
+    assert.equal(completedCredit.balance, 0);
+    assert.equal(completedCredit.transactions[0].type, 'withdrawal_completed');
+    assert.equal(completedCredit.transactions[0].amount, -300);
+
+    const [completedWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
+    assert.equal(completedWithdrawal.status, 'completed');
+    assert.equal(completedWithdrawal.completedAmount, 300);
+
+    const duplicateComplete = await fetch(`${server.baseUrl}/withdrawals/${encodeURIComponent(pendingWithdrawal.id)}/complete`, {
+      method: 'POST',
+      headers: { cookie }
+    });
+    assert.equal(duplicateComplete.status, 409);
+
+    const creditsAfterDuplicate = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    assert.equal(creditsAfterDuplicate.find((row) => row.userId === 'UwithdrawUser').balance, 0);
+
+    const completeLogs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const completeLog = completeLogs.find((log) => log.creditAction === 'withdrawal_completed');
+    assert.ok(completeLog);
+    assert.equal(completeLog.withdrawalId, pendingWithdrawal.id);
+    assert.equal(completeLog.withdrawalPushStatus, 'skipped');
+  } finally {
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+    await server.stop();
+  }
+});
+
+test('admin can cancel a pending withdrawal with a reason without deducting credit', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+
+    fs.writeFileSync(CREDIT_FILE, JSON.stringify([
+      {
+        userId: 'UwithdrawCancel',
+        balance: 150,
+        totalAdded: 150,
+        transactions: [
+          {
+            id: 'seed-withdraw-cancel',
+            type: 'test_credit_seed',
+            amount: 150,
+            rawText: 'seed',
+            displayName: 'Cancel User',
+            balanceAfter: 150,
+            timestamp: 1710000000000,
+            time: '2024-03-09T16:00:00.000Z'
+          }
+        ],
+        updatedTimestamp: 1710000000000,
+        updatedTime: '2024-03-09T16:00:00.000Z'
+      }
+    ], null, 2), 'utf8');
+
+    const withdrawal = {
+      id: 'withdraw-cancel-test',
+      userId: 'UwithdrawCancel',
+      displayName: 'Cancel User',
+      pictureUrl: '',
+      bankName: 'กรุงเทพ',
+      accountNumber: '1112223334',
+      amount: 100,
+      availableBalance: 150,
+      status: 'pending',
+      createdTimestamp: 1710000000001,
+      createdTime: '09/03/2567 23:00:00'
+    };
+    fs.writeFileSync(WITHDRAWAL_FILE, JSON.stringify([withdrawal], null, 2), 'utf8');
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+
+    const cancel = await fetch(`${server.baseUrl}/withdrawals/${encodeURIComponent(withdrawal.id)}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', cookie },
+      body: new URLSearchParams({ reason: 'เลขบัญชีไม่ถูกต้อง' }),
+      redirect: 'manual'
+    });
+    assert.equal(cancel.status, 302);
+    assert.match(cancel.headers.get('location') || '', /\/withdrawals/);
+
+    const [cancelledWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
+    assert.equal(cancelledWithdrawal.status, 'cancelled');
+    assert.equal(cancelledWithdrawal.cancelReason, 'เลขบัญชีไม่ถูกต้อง');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    assert.equal(credits.find((row) => row.userId === 'UwithdrawCancel').balance, 150);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const cancelLog = logs.find((log) => log.creditAction === 'withdrawal_cancelled');
+    assert.ok(cancelLog);
+    assert.equal(cancelLog.withdrawalCancelReason, 'เลขบัญชีไม่ถูกต้อง');
+    assert.equal(cancelLog.withdrawalPushStatus, 'skipped');
   } finally {
     fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
     await server.stop();

@@ -478,7 +478,13 @@ function normalizeWithdrawalRow(row) {
     availableBalance: roundPoints(row.availableBalance),
     status: row.status || 'pending',
     createdTimestamp: row.createdTimestamp || row.timestamp || 0,
-    createdTime: row.createdTime || row.time || ''
+    createdTime: row.createdTime || row.time || '',
+    completedAmount: roundPoints(row.completedAmount),
+    completedTimestamp: row.completedTimestamp || 0,
+    completedTime: row.completedTime || '',
+    cancelReason: String(row.cancelReason || '').trim(),
+    cancelledTimestamp: row.cancelledTimestamp || 0,
+    cancelledTime: row.cancelledTime || ''
   };
 }
 
@@ -1248,6 +1254,61 @@ function getCreditSnapshot(userId) {
   };
 }
 
+function updateCreditForCompletedWithdrawal(withdrawal, nowTimestamp = Date.now()) {
+  const credits = readCredits();
+  const existing = credits.find((credit) => credit.userId === withdrawal.userId);
+  if (!existing) {
+    return { success: false, status: 404, error: 'ไม่พบผู้ใช้เครดิต' };
+  }
+
+  const amount = roundPoints(withdrawal.amount);
+  const snapshot = getCreditSnapshot(withdrawal.userId);
+  if (snapshot.withdrawableBalance < amount) {
+    return { success: false, status: 400, error: 'ยอดเครดิตไม่พอสำหรับถอน' };
+  }
+
+  const nextBalance = roundPoints(existing.balance - amount);
+  const transaction = {
+    id: `${withdrawal.id}:completed`,
+    type: 'withdrawal_completed',
+    amount: -amount,
+    rawText: `Withdrawal completed ${withdrawal.id}`,
+    withdrawalId: withdrawal.id,
+    displayName: withdrawal.displayName || '',
+    bankName: withdrawal.bankName || '',
+    accountNumber: withdrawal.accountNumber || '',
+    balanceAfter: nextBalance,
+    timestamp: nowTimestamp,
+    time: formatDate(nowTimestamp)
+  };
+  const updatedCredit = {
+    ...existing,
+    balance: nextBalance,
+    transactions: [transaction, ...(existing.transactions || [])].slice(0, MAX_CREDIT_TRANSACTIONS),
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  };
+
+  writeCredits([updatedCredit, ...credits.filter((credit) => credit.userId !== withdrawal.userId)]);
+  return { success: true, credit: updatedCredit, transaction };
+}
+
+function updateWithdrawalById(withdrawalId, updater) {
+  let updatedWithdrawal = null;
+  const withdrawals = readWithdrawals().map((withdrawal) => {
+    if (withdrawal.id !== withdrawalId) return withdrawal;
+
+    updatedWithdrawal = updater(withdrawal);
+    return updatedWithdrawal;
+  });
+
+  if (updatedWithdrawal) {
+    writeWithdrawals(withdrawals);
+  }
+
+  return updatedWithdrawal;
+}
+
 function parsePositiveAmount(value) {
   const amount = Number(String(value || '').replace(/[^\d.]/g, ''));
   return Number.isFinite(amount) && amount > 0 ? roundPoints(amount) : 0;
@@ -1833,6 +1894,46 @@ function buildWithdrawalRequestFlex(snapshot, formUrl) {
       actionButtons: [
         flexUriButton('กรอกข้อมูลถอนเงิน', formUrl, '#EF4444')
       ]
+    })
+  };
+}
+
+function buildWithdrawalCompletedFlex(withdrawal, credit) {
+  return {
+    type: 'flex',
+    altText: `ถอนเครดิตสำเร็จ ${formatPoints(withdrawal.amount)}`,
+    contents: buildCreditBubble({
+      title: '✓ ถอนเครดิตสำเร็จ',
+      titleColor: '#22C55E',
+      bodyColor: '#111827',
+      subtitle: 'ยอดที่ถอน',
+      amount: formatPoints(withdrawal.amount),
+      rows: [
+        flexRow('ธนาคาร', withdrawal.bankName || '-'),
+        flexRow('เลขบัญชี', withdrawal.accountNumber || '-'),
+        flexRow('ยอดคงเหลือ', formatPoints(credit.balance))
+      ],
+      footer: 'แอดมินทำรายการเสร็จสิ้นแล้ว'
+    })
+  };
+}
+
+function buildWithdrawalCancelledFlex(withdrawal) {
+  return {
+    type: 'flex',
+    altText: `ยกเลิกถอนเครดิต ${formatPoints(withdrawal.amount)}`,
+    contents: buildCreditBubble({
+      title: '✕ ยกเลิกถอนเครดิต',
+      titleColor: '#EF4444',
+      bodyColor: '#EF4444',
+      subtitle: 'ยอดที่ขอถอน',
+      amount: formatPoints(withdrawal.amount),
+      rows: [
+        flexRow('ธนาคาร', withdrawal.bankName || '-'),
+        flexRow('เลขบัญชี', withdrawal.accountNumber || '-'),
+        flexRow('เหตุผล', withdrawal.cancelReason || '-')
+      ],
+      footer: 'กรุณาตรวจสอบข้อมูลแล้วส่งคำขอใหม่'
     })
   };
 }
@@ -5449,6 +5550,22 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
     const avatar = withdrawal.pictureUrl
       ? `<img class="avatar avatar-image" src="${escapeHtml(withdrawal.pictureUrl)}" alt="">`
       : `<div class="avatar">${escapeHtml((withdrawal.displayName || String(index + 1)).slice(0, 1))}</div>`;
+    const statusDetail = withdrawal.status === 'completed'
+      ? `<div class="detail-row"><span>เสร็จสิ้น</span><strong>${escapeHtml(withdrawal.completedTime || '-')}</strong></div>`
+      : withdrawal.status === 'cancelled'
+        ? `<div class="detail-row"><span>เหตุผลยกเลิก</span><strong>${escapeHtml(withdrawal.cancelReason || '-')}</strong></div>`
+        : '';
+    const adminActions = withdrawal.status === 'pending'
+      ? `<div class="card-actions">
+          <form method="post" action="/withdrawals/${encodeURIComponent(withdrawal.id)}/complete">
+            <button class="complete-button" type="submit">เสร็จสิ้น</button>
+          </form>
+          <form class="cancel-form" method="post" action="/withdrawals/${encodeURIComponent(withdrawal.id)}/cancel">
+            <input name="reason" type="text" maxlength="120" required placeholder="เหตุผลที่ยกเลิก">
+            <button class="cancel-button" type="submit">ยกเลิก</button>
+          </form>
+        </div>`
+      : '';
 
     return `<article class="withdraw-card">
       <div class="user-row">
@@ -5463,6 +5580,8 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
       <div class="detail-row"><span>ธนาคาร</span><strong>${escapeHtml(withdrawal.bankName)}</strong></div>
       <div class="detail-row"><span>เลขบัญชี</span><strong>${escapeHtml(withdrawal.accountNumber)}</strong></div>
       <div class="detail-row"><span>ยอดที่ถอนได้ตอนส่ง</span><strong>${escapeHtml(formatPoints(withdrawal.availableBalance))}</strong></div>
+      ${statusDetail}
+      ${adminActions}
     </article>`;
   });
 
@@ -5604,6 +5723,41 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
       text-align: right;
       word-break: break-word;
     }
+    .card-actions {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #f3f4f6;
+    }
+    .card-actions form {
+      margin: 0;
+    }
+    .complete-button, .cancel-button {
+      width: 100%;
+      min-height: 38px;
+      border: 0;
+      border-radius: 8px;
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .complete-button {
+      background: #16a34a;
+    }
+    .cancel-button {
+      margin-top: 7px;
+      background: #dc2626;
+    }
+    .cancel-form input {
+      width: 100%;
+      min-height: 36px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px 9px;
+      font-size: 14px;
+    }
     .empty {
       padding: 28px 14px;
       color: #6b7280;
@@ -5634,6 +5788,106 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
   </main>
 </body>
 </html>`);
+});
+
+app.post('/withdrawals/:withdrawalId/complete', requireCreditsAdminAuth, async (req, res) => {
+  const withdrawalId = String(req.params.withdrawalId || '').trim();
+  const withdrawal = readWithdrawals().find((entry) => entry.id === withdrawalId);
+  if (!withdrawal) {
+    return res.status(404).send('ไม่พบรายการถอนเครดิต');
+  }
+
+  if (withdrawal.status !== 'pending') {
+    return res.status(409).send('รายการถอนนี้ถูกดำเนินการแล้ว');
+  }
+
+  const nowTimestamp = Date.now();
+  const creditResult = updateCreditForCompletedWithdrawal(withdrawal, nowTimestamp);
+  if (!creditResult.success) {
+    return res.status(creditResult.status || 400).send(creditResult.error || 'ไม่สามารถถอนเครดิตได้');
+  }
+
+  const updatedWithdrawal = updateWithdrawalById(withdrawal.id, (entry) => ({
+    ...entry,
+    status: 'completed',
+    completedAmount: roundPoints(entry.amount),
+    completedTimestamp: nowTimestamp,
+    completedTime: formatDate(nowTimestamp)
+  }));
+  const pushResponse = await pushToLine(
+    updatedWithdrawal.userId,
+    [buildWithdrawalCompletedFlex(updatedWithdrawal, creditResult.credit)]
+  ).catch(() => null);
+  const pushStatus = pushResponse ? (pushResponse.ok ? 'sent' : 'failed') : 'skipped';
+
+  writeLogs([
+    {
+      eventType: 'withdrawal_completed',
+      sourceType: 'web_admin',
+      userId: updatedWithdrawal.userId,
+      message: `Withdrawal completed ${updatedWithdrawal.id}`,
+      timestamp: nowTimestamp,
+      time: formatDate(nowTimestamp),
+      creditAction: 'withdrawal_completed',
+      creditAmount: -roundPoints(updatedWithdrawal.amount),
+      creditBalance: creditResult.credit.balance,
+      withdrawalId: updatedWithdrawal.id,
+      withdrawalPushStatus: pushStatus
+    },
+    ...readLogs()
+  ]);
+
+  return res.redirect('/withdrawals');
+});
+
+app.post('/withdrawals/:withdrawalId/cancel', requireCreditsAdminAuth, async (req, res) => {
+  const withdrawalId = String(req.params.withdrawalId || '').trim();
+  const reason = String(req.body?.reason || '').trim();
+  const withdrawal = readWithdrawals().find((entry) => entry.id === withdrawalId);
+  if (!withdrawal) {
+    return res.status(404).send('ไม่พบรายการถอนเครดิต');
+  }
+
+  if (withdrawal.status !== 'pending') {
+    return res.status(409).send('รายการถอนนี้ถูกดำเนินการแล้ว');
+  }
+
+  if (!reason) {
+    return res.status(400).send('กรุณาระบุเหตุผลที่ยกเลิก');
+  }
+
+  const nowTimestamp = Date.now();
+  const updatedWithdrawal = updateWithdrawalById(withdrawal.id, (entry) => ({
+    ...entry,
+    status: 'cancelled',
+    cancelReason: reason,
+    cancelledTimestamp: nowTimestamp,
+    cancelledTime: formatDate(nowTimestamp)
+  }));
+  const pushResponse = await pushToLine(
+    updatedWithdrawal.userId,
+    [buildWithdrawalCancelledFlex(updatedWithdrawal)]
+  ).catch(() => null);
+  const pushStatus = pushResponse ? (pushResponse.ok ? 'sent' : 'failed') : 'skipped';
+
+  writeLogs([
+    {
+      eventType: 'withdrawal_cancelled',
+      sourceType: 'web_admin',
+      userId: updatedWithdrawal.userId,
+      message: `Withdrawal cancelled ${updatedWithdrawal.id}: ${reason}`,
+      timestamp: nowTimestamp,
+      time: formatDate(nowTimestamp),
+      creditAction: 'withdrawal_cancelled',
+      creditAmount: 0,
+      withdrawalId: updatedWithdrawal.id,
+      withdrawalCancelReason: reason,
+      withdrawalPushStatus: pushStatus
+    },
+    ...readLogs()
+  ]);
+
+  return res.redirect('/withdrawals');
 });
 
 app.get('/api/logs', (req, res) => {
