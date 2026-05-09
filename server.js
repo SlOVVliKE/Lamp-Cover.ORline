@@ -1418,20 +1418,12 @@ function updateCreditForCompletedWithdrawal(withdrawal, nowTimestamp = Date.now(
   return { success: true, credit: updatedCredit, transaction };
 }
 
-function updateWithdrawalById(withdrawalId, updater) {
-  let updatedWithdrawal = null;
-  const withdrawals = readWithdrawals().map((withdrawal) => {
-    if (withdrawal.id !== withdrawalId) return withdrawal;
-
-    updatedWithdrawal = updater(withdrawal);
-    return updatedWithdrawal;
-  });
-
-  if (updatedWithdrawal) {
-    writeWithdrawals(withdrawals);
+function removeWithdrawalById(withdrawalId) {
+  const withdrawals = readWithdrawals();
+  const nextWithdrawals = withdrawals.filter((withdrawal) => withdrawal.id !== withdrawalId);
+  if (nextWithdrawals.length !== withdrawals.length) {
+    writeWithdrawals(nextWithdrawals);
   }
-
-  return updatedWithdrawal;
 }
 
 function parsePositiveAmount(value) {
@@ -5983,13 +5975,14 @@ app.post('/withdrawals/:withdrawalId/complete', requireCreditsAdminAuth, async (
     return res.status(creditResult.status || 400).send(creditResult.error || 'ไม่สามารถถอนเครดิตได้');
   }
 
-  const updatedWithdrawal = updateWithdrawalById(withdrawal.id, (entry) => ({
-    ...entry,
+  const updatedWithdrawal = {
+    ...withdrawal,
     status: 'completed',
-    completedAmount: roundPoints(entry.amount),
+    completedAmount: roundPoints(withdrawal.amount),
     completedTimestamp: nowTimestamp,
     completedTime: formatDate(nowTimestamp)
-  }));
+  };
+  removeWithdrawalById(withdrawal.id);
   const pushResponse = await pushToLine(
     updatedWithdrawal.userId,
     [buildWithdrawalCompletedFlex(updatedWithdrawal, creditResult.credit)]
@@ -6033,13 +6026,14 @@ app.post('/withdrawals/:withdrawalId/cancel', requireCreditsAdminAuth, async (re
   }
 
   const nowTimestamp = Date.now();
-  const updatedWithdrawal = updateWithdrawalById(withdrawal.id, (entry) => ({
-    ...entry,
+  const updatedWithdrawal = {
+    ...withdrawal,
     status: 'cancelled',
     cancelReason: reason,
     cancelledTimestamp: nowTimestamp,
     cancelledTime: formatDate(nowTimestamp)
-  }));
+  };
+  removeWithdrawalById(withdrawal.id);
   const pushResponse = await pushToLine(
     updatedWithdrawal.userId,
     [buildWithdrawalCancelledFlex(updatedWithdrawal)]

@@ -3355,15 +3355,17 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
     assert.equal(completedCredit.transactions[0].type, 'withdrawal_completed');
     assert.equal(completedCredit.transactions[0].amount, -300);
 
-    const [completedWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
-    assert.equal(completedWithdrawal.status, 'completed');
-    assert.equal(completedWithdrawal.completedAmount, 300);
+    assert.deepEqual(JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8')), []);
+
+    const withdrawalsAfterComplete = await fetch(`${server.baseUrl}/withdrawals`, { headers: { cookie } });
+    const withdrawalsAfterCompleteHtml = await withdrawalsAfterComplete.text();
+    assert.doesNotMatch(withdrawalsAfterCompleteHtml, /Bank Thirakan/);
 
     const duplicateComplete = await fetch(`${server.baseUrl}/withdrawals/${encodeURIComponent(pendingWithdrawal.id)}/complete`, {
       method: 'POST',
       headers: { cookie }
     });
-    assert.equal(duplicateComplete.status, 409);
+    assert.equal(duplicateComplete.status, 404);
 
     const creditsAfterDuplicate = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     assert.equal(creditsAfterDuplicate.find((row) => row.userId === 'UwithdrawUser').balance, 0);
@@ -3441,9 +3443,11 @@ test('admin can cancel a pending withdrawal with a reason without deducting cred
     assert.equal(cancel.status, 302);
     assert.match(cancel.headers.get('location') || '', /\/withdrawals/);
 
-    const [cancelledWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
-    assert.equal(cancelledWithdrawal.status, 'cancelled');
-    assert.equal(cancelledWithdrawal.cancelReason, 'เลขบัญชีไม่ถูกต้อง');
+    assert.deepEqual(JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8')), []);
+
+    const withdrawalsAfterCancel = await fetch(`${server.baseUrl}/withdrawals`, { headers: { cookie } });
+    const withdrawalsAfterCancelHtml = await withdrawalsAfterCancel.text();
+    assert.doesNotMatch(withdrawalsAfterCancelHtml, /Cancel User/);
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     assert.equal(credits.find((row) => row.userId === 'UwithdrawCancel').balance, 150);
