@@ -5673,7 +5673,6 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
         <p class="hint">เติมมือเฉพาะกรณีสลิปเติมไม่เข้า</p>
       </div>
       <div class="actions">
-        <a class="button" href="/credits">Refresh</a>
         <a class="button" href="/withdrawals">หน้าถอน</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
@@ -5994,7 +5993,6 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
         <p class="hint">รายการถอนจากผู้ใช้ใน LINE OA</p>
       </div>
       <div class="actions">
-        <a class="button" href="/withdrawals">Refresh</a>
         <a class="button" href="/credits">หน้าเครดิต</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
