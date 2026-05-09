@@ -2904,7 +2904,7 @@ test('replies with a compact LINE OA profile card when a group member asks for �
 test('sends behind house payment text and profile card in one LINE reply call', () => {
   const source = fs.readFileSync('server.js', 'utf8');
   const blockStart = source.indexOf('if (behindHouseAction) {');
-  const blockEnd = source.indexOf('if (woundAction?.type ===', blockStart);
+  const blockEnd = source.indexOf('if (betGroupInviteAction) {', blockStart);
   const behindHouseBlock = source.slice(blockStart, blockEnd);
 
   assert.notEqual(blockStart, -1);
@@ -2942,6 +2942,82 @@ test('replies with payment account details from private account keywords', async
       assert.equal(log.creditReplyMessages[1].type, 'flex');
       assert.match(log.creditReplyMessages[1].altText, /หลังบ้าน/);
     }
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with betting group invite links from the private menu keyword', async () => {
+  const inviteText = [
+    'เปิดฤดูกาลบั้งไฟแสน',
+    'เข้ากลุ่มชมฟรี ส.กวิน',
+    'มีกิจกรรมสำหรับพี่ๆที่มียอดการเล่น',
+    '',
+    'กลุ่ม1 คำผักหนาม',
+    'https://line.me/ti/g/m4YA7PzmsE',
+    '',
+    'กลุ่ม2 หัวตะพาน',
+    'https://line.me/ti/g/V79ffVz_7P'
+  ].join('\\n');
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: '',
+    BET_GROUP_INVITE_TEXT: inviteText
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UbetGroupInvite' },
+        replyToken: 'reply-bet-group-invite',
+        message: { type: 'text', id: 'm-bet-group-invite', text: 'เข้ากลุ่มแทง' },
+        timestamp: 1710000082500
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
+
+    assert.ok(inviteLog);
+    assert.equal(inviteLog.betGroupInviteReplyTexts.length, 1);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /เปิดฤดูกาลบั้งไฟแสน/);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /กลุ่ม1 คำผักหนาม/);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /https:\/\/line\.me\/ti\/g\/m4YA7PzmsE/);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /กลุ่ม2 หัวตะพาน/);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /https:\/\/line\.me\/ti\/g\/V79ffVz_7P/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with betting group invite links from a private rich menu postback', async () => {
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: '',
+    BET_GROUP_INVITE_TEXT: 'กลุ่ม1 ทดสอบ\\nhttps://line.me/ti/g/example'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'postback',
+        source: { type: 'user', userId: 'UbetGroupPostback' },
+        replyToken: 'reply-bet-group-postback',
+        postback: { data: 'action=bet_group_invite' },
+        timestamp: 1710000082550
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
+
+    assert.ok(inviteLog);
+    assert.equal(inviteLog.betGroupInviteReplyTexts.length, 1);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /กลุ่ม1 ทดสอบ/);
+    assert.match(inviteLog.betGroupInviteReplyTexts[0], /https:\/\/line\.me\/ti\/g\/example/);
   } finally {
     await server.stop();
   }

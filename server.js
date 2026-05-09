@@ -17,6 +17,19 @@ const LINE_CONTENT_API_BASE_URL = process.env.LINE_CONTENT_API_BASE_URL || 'http
 const LINE_OFFICIAL_ACCOUNT_URL = process.env.LINE_OFFICIAL_ACCOUNT_URL || process.env.LINE_OA_URL || '';
 const LINE_OFFICIAL_ACCOUNT_NAME = process.env.LINE_OFFICIAL_ACCOUNT_NAME || 'Lamp cover.OR';
 const LINE_OFFICIAL_ACCOUNT_IMAGE_URL = process.env.LINE_OFFICIAL_ACCOUNT_IMAGE_URL || '';
+const DEFAULT_BET_GROUP_INVITE_TEXT = [
+  'เปิดฤดูกาลบั้งไฟแสน',
+  'เข้ากลุ่มชมฟรี ส.กวิน',
+  'มีกิจกรรมสำหรับพี่ๆที่มียอดการเล่น',
+  '',
+  'กลุ่ม1 คำผักหนาม',
+  'https://line.me/ti/g/m4YA7PzmsE',
+  '',
+  'กลุ่ม2 หัวตะพาน',
+  'https://line.me/ti/g/V79ffVz_7P'
+].join('\n');
+const BET_GROUP_INVITE_TEXT =
+  parseMultilineEnv(process.env.BET_GROUP_INVITE_TEXT) || DEFAULT_BET_GROUP_INVITE_TEXT;
 const EASYSLIP_API_KEY = process.env.EASYSLIP_API_KEY || '';
 const EASYSLIP_API_BASE_URL = process.env.EASYSLIP_API_BASE_URL || 'https://api.easyslip.com/v2';
 const EASYSLIP_MATCH_ACCOUNT = process.env.EASYSLIP_MATCH_ACCOUNT === 'true';
@@ -78,6 +91,10 @@ let mongoDb = null;
 let mongoConnected = false;
 const mongoCache = new Map();
 const mongoWriteQueues = new Map();
+
+function parseMultilineEnv(value) {
+  return String(value || '').replace(/\\n/g, '\n').trim();
+}
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value ?? null));
@@ -1220,6 +1237,23 @@ function parseCreditKeyword(message) {
 function parsePaymentAccountKeyword(message) {
   const text = normalizeMessageText(message).replace(/\s+/g, '');
   return ['บช', 'เลข', 'เลขบัญชี', 'บัญชี', 'ลบช', 'เลขบช'].includes(text);
+}
+
+function parseBetGroupInviteKeyword(message) {
+  const text = normalizeMessageText(message).replace(/\s+/g, '');
+  return ['เข้ากลุ่มแทง', 'กลุ่มแทง'].includes(text);
+}
+
+function parseBetGroupInvitePostbackData(data) {
+  const rawData = String(data || '').trim();
+  if (!rawData) return false;
+  if (parseBetGroupInviteKeyword(rawData)) return true;
+
+  const params = new URLSearchParams(rawData);
+  const action = String(params.get('action') || params.get('type') || '').trim().toLowerCase();
+  const normalizedAction = action.replace(/[-\s]+/g, '_');
+
+  return ['bet_group_invite', 'betgroupinvite'].includes(normalizedAction);
 }
 
 function parseGroupAdminLookupKeyword(message) {
@@ -3177,6 +3211,29 @@ function handleBehindHouseCommand(event) {
   };
 }
 
+function handleBetGroupInviteEvent(event) {
+  if (event.source?.type !== 'user') {
+    return null;
+  }
+
+  const requestedByMessage =
+    event.type === 'message' &&
+    event.message?.type === 'text' &&
+    parseBetGroupInviteKeyword(getMessageText(event));
+  const requestedByPostback =
+    event.type === 'postback' &&
+    parseBetGroupInvitePostbackData(event.postback?.data);
+
+  if (!requestedByMessage && !requestedByPostback) {
+    return null;
+  }
+
+  return {
+    type: 'bet_group_invite',
+    replyTexts: [BET_GROUP_INVITE_TEXT]
+  };
+}
+
 function trackGroupMessage(event) {
   if (!isGroupTextMessage(event) || !event.message.id) {
     return null;
@@ -3991,6 +4048,7 @@ app.post(
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
           const blackAccountAction = handleBlackAccountCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
+          const betGroupInviteAction = handleBetGroupInviteEvent(event);
           const trackedMessage = trackGroupMessage(event);
           const woundAction = await createWoundFromReply(event);
           const woundCancelAction = await handleWoundCancelPostback(event);
@@ -4128,6 +4186,17 @@ app.post(
 
             if (behindHouseReplyMessages.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, behindHouseReplyMessages));
+            }
+          }
+
+          if (betGroupInviteAction) {
+            logEntry.betGroupInviteRequested = true;
+            logEntry.betGroupInviteReplyTexts = Array.isArray(betGroupInviteAction.replyTexts)
+              ? betGroupInviteAction.replyTexts
+              : [];
+
+            if (logEntry.betGroupInviteReplyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, logEntry.betGroupInviteReplyTexts));
             }
           }
 

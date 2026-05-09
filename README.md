@@ -91,6 +91,7 @@ LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
 LINE_OFFICIAL_ACCOUNT_URL=https://line.me/R/ti/p/your_line_oa_id
 LINE_OFFICIAL_ACCOUNT_NAME=Lamp cover.OR
 LINE_OFFICIAL_ACCOUNT_IMAGE_URL=
+BET_GROUP_INVITE_TEXT=เปิดฤดูกาลบั้งไฟแสน\nเข้ากลุ่มชมฟรี ส.กวิน\nมีกิจกรรมสำหรับพี่ๆที่มียอดการเล่น\n\nกลุ่ม1 คำผักหนาม\nhttps://line.me/ti/g/m4YA7PzmsE\n\nกลุ่ม2 หัวตะพาน\nhttps://line.me/ti/g/V79ffVz_7P
 EASYSLIP_API_KEY=your_easyslip_api_key
 EASYSLIP_MATCH_ACCOUNT=false
 EASYSLIP_CHECK_DUPLICATE=true
@@ -554,9 +555,12 @@ User menu keywords:
 เช็คยอดเงิน
 แผลที่กำลังติด
 ถอนยอดเงิน
+เข้ากลุ่มแทง
 ```
 
 The bot replies with LINE Flex Message cards when `LINE_CHANNEL_ACCESS_TOKEN` is set. If the token is not set, the webhook still records credit data and logs, but it cannot send cards back to LINE.
+
+`เข้ากลุ่มแทง` replies with the betting group invite text. You can edit it on Render with `BET_GROUP_INVITE_TEXT`; use `\n` for line breaks.
 
 Credit balances can be viewed at:
 
