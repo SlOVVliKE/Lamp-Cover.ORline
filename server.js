@@ -68,12 +68,6 @@ const WIN_PAYOUT_RATE = 0.95;
 const WITHDRAWAL_OPEN_HOUR = 18;
 const WITHDRAWAL_CLOSE_HOUR = 8;
 const WITHDRAWAL_TOKEN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-const BUILDER_PRICE_REPEAT_INTERVAL_MS = (() => {
-  const value = Number(process.env.BUILDER_PRICE_REPEAT_INTERVAL_MS);
-  return Number.isFinite(value) && value > 0 ? value : 5000;
-})();
-const BUILDER_PRICE_REPEAT_ENABLED = process.env.BUILDER_PRICE_REPEAT_ENABLED !== 'false';
-const builderPriceRepeatTimers = new Map();
 const NO_QUEUE_REPLY = 'ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀';
 const REPEATED_TRADE_WARNING_THRESHOLD = 3;
 const REPEATED_TRADE_WARNING_REPLY = [
@@ -973,6 +967,13 @@ function parseWaitBuilderPriceCommand(message) {
   };
 }
 
+function parseRoundReminderCommand(message) {
+  const text = normalizeMessageText(message).replace(/\s+/g, '');
+  if (text === 'รอ' || text === 'รอราคาช่าง') return 'waiting_price';
+  if (text === 'ลุย' || text === 'มาละ' || text === 'ตามนั้น') return 'ready';
+  return '';
+}
+
 function parseCloseCommand(message) {
   return normalizeMessageText(message) === 'ปิด';
 }
@@ -1066,46 +1067,13 @@ function buildOpenReply(round) {
   return `${round.queueName}\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀`;
 }
 
-function clearBuilderPriceRepeat(groupId) {
-  const key = String(groupId || '').trim();
-  if (!key) return;
+function shouldSendRoundReminder(round, reminderMode) {
+  if (!round || round.status !== 'open') return false;
 
-  const timer = builderPriceRepeatTimers.get(key);
-  if (timer) {
-    clearInterval(timer);
-    builderPriceRepeatTimers.delete(key);
-  }
-}
-
-function scheduleBuilderPriceRepeat(round) {
-  if (!BUILDER_PRICE_REPEAT_ENABLED || !LINE_CHANNEL_ACCESS_TOKEN || !round?.groupId) {
-    return;
-  }
-
-  clearBuilderPriceRepeat(round.groupId);
-
-  const timer = setInterval(async () => {
-    const currentRound = getLatestRoundForGroup(round.groupId);
-    const shouldStop =
-      !currentRound ||
-      currentRound.id !== round.id ||
-      currentRound.status !== 'open';
-
-    if (shouldStop) {
-      clearBuilderPriceRepeat(round.groupId);
-      return;
-    }
-
-    await pushToLine(round.groupId, [buildOpenReply(currentRound)]).catch((error) => {
-      console.error('Queue card repeat push failed:', error.message);
-    });
-  }, BUILDER_PRICE_REPEAT_INTERVAL_MS);
-
-  if (typeof timer.unref === 'function') {
-    timer.unref();
-  }
-
-  builderPriceRepeatTimers.set(round.groupId, timer);
+  const hasBuilderPrice = Boolean(getRoundPrice(round));
+  if (reminderMode === 'waiting_price') return !hasBuilderPrice && !round.noBuilderPrice;
+  if (reminderMode === 'ready') return hasBuilderPrice;
+  return false;
 }
 
 function buildCloseReply(round) {
@@ -3860,7 +3828,6 @@ function handleQueueAdminCommand(event) {
   if (parseFinishQueueCommand(messageText)) {
     const queueSummary = buildQueueSummary(source.groupId);
     const queueFinishedReply = buildQueueFinishedReply();
-    clearBuilderPriceRepeat(source.groupId);
     clearQueueListForGroup(source.groupId);
     return {
       type: 'queue_day_finished',
@@ -3907,10 +3874,22 @@ function handleQueueAdminCommand(event) {
     };
 
     upsertRound(round);
-    scheduleBuilderPriceRepeat(round);
     return {
       type: 'round_opened',
       round,
+      replyTexts: [buildOpenReply(round)]
+    };
+  }
+
+  const roundReminderCommand = parseRoundReminderCommand(messageText);
+  if (roundReminderCommand) {
+    const round = getOpenRoundForGroup(source.groupId);
+    if (!shouldSendRoundReminder(round, roundReminderCommand)) return null;
+
+    return {
+      type: 'round_manual_reminder',
+      round,
+      reminderMode: roundReminderCommand,
       replyTexts: [buildOpenReply(round)]
     };
   }
@@ -3954,7 +3933,6 @@ function handleQueueAdminCommand(event) {
     };
 
     upsertRound(closedRound);
-    clearBuilderPriceRepeat(source.groupId);
     return {
       type: 'round_closed',
       round: closedRound,
@@ -4034,7 +4012,6 @@ function handleQueueAdminCommand(event) {
   const closedCount = closeResult.closedCount;
 
   upsertRound(resultedRound);
-  clearBuilderPriceRepeat(source.groupId);
   const queueFinished = !wasQueueFinishedBefore && isQueueListFinished(source.groupId);
   const queueFinishedReply = queueFinished ? buildQueueFinishedReply() : '';
   const replyTexts = [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)];

@@ -401,6 +401,21 @@ Open a queue round:
 🚀🚀🚀🚀🚀
 ```
 
+To show that same queue card again while waiting for the builder price, a registered admin sends:
+
+```text
+รอ
+รอราคาช่าง
+```
+
+After the round already has a builder price, a registered admin sends one of these to show the priced queue card again:
+
+```text
+ลุย
+มาละ
+ตามนั้น
+```
+
 If the group announces no builder during the current round, a registered admin can send:
 
 ```text

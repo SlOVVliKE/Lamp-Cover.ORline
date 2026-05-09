@@ -1690,7 +1690,7 @@ test('replies with the queue card format after setting the builder price', async
   }
 });
 
-test('repeats the open queue card by push and stops immediately after close', async () => {
+test('sends open queue card only from admin reminder keywords', async () => {
   const pushRequests = [];
   const lineServer = await startHttpMock(async (req, res) => {
     const chunks = [];
@@ -1705,8 +1705,7 @@ test('repeats the open queue card by push and stops immediately after close', as
   });
   const server = await startServer({
     LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
-    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl,
-    BUILDER_PRICE_REPEAT_INTERVAL_MS: '25'
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl
   });
 
   try {
@@ -1726,17 +1725,71 @@ test('repeats the open queue card by push and stops immediately after close', as
       }
     ]);
 
-    await waitForCondition(() => pushRequests.length >= 2, 400, 15);
-    assert.ok(pushRequests.length >= 2);
-    assert.equal(pushRequests[0].to, 'Grepeat-builder-price');
-    assert.deepEqual(pushRequests[0].messages, [
+    await delay(90);
+    assert.equal(pushRequests.length, 0);
+
+    await postWebhook(server.baseUrl, [
       {
-        type: 'text',
-        text: 'นายกบุญช่วย\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀'
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-wait-short', text: 'รอ' },
+        timestamp: 1710000200100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-wait-price', text: 'รอราคาช่าง' },
+        timestamp: 1710000200200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-ready-too-early', text: 'ลุย' },
+        timestamp: 1710000200300
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-builder-price', text: 'ราคาช่าง 200-250' },
+        timestamp: 1710000200400
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-ready-go', text: 'ลุย' },
+        timestamp: 1710000200500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-ready-here', text: 'มาละ' },
+        timestamp: 1710000200600
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-ready-confirm', text: 'ตามนั้น' },
+        timestamp: 1710000200700
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-wait-after-price', text: 'รอ' },
+        timestamp: 1710000200800
       }
     ]);
 
-    const countBeforeClose = pushRequests.length;
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const reminderLogs = logs.filter((log) => log.queueAction === 'round_manual_reminder');
+    const reminderByMessage = new Map(reminderLogs.map((log) => [log.message, log.queueReplyTexts[0]]));
+
+    assert.equal(reminderLogs.length, 5);
+    assert.equal(reminderByMessage.get('รอ'), 'นายกบุญช่วย\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀');
+    assert.equal(reminderByMessage.get('รอราคาช่าง'), 'นายกบุญช่วย\n\nช่าง ⛔️\n\n🚀🚀🚀🚀🚀');
+    assert.equal(reminderByMessage.get('ลุย'), 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀');
+    assert.equal(reminderByMessage.get('มาละ'), 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀');
+    assert.equal(reminderByMessage.get('ตามนั้น'), 'นายกบุญช่วย\n\nช่าง 200-250 ⛔️\n\n🚀🚀🚀🚀🚀');
+    assert.equal(logs.some((log) => log.message === 'รอ' && log.timestamp === 1710000200800 && log.queueAction), false);
 
     await postWebhook(server.baseUrl, [
       {
@@ -1747,8 +1800,17 @@ test('repeats the open queue card by push and stops immediately after close', as
       }
     ]);
 
-    await delay(80);
-    assert.equal(pushRequests.length, countBeforeClose);
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-builder-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-remind-ready-after-close', text: 'ลุย' },
+        timestamp: 1710000201100
+      }
+    ]);
+
+    const logsAfterClose = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logsAfterClose.some((log) => log.message === 'ลุย' && log.timestamp === 1710000201100 && log.queueAction), false);
   } finally {
     await server.stop();
     await lineServer.stop();
