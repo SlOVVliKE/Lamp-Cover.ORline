@@ -3104,7 +3104,7 @@ test('adds private chat credit from EasySlip verified image slips and rejects du
   }
 });
 
-test('builds balance, active wound, and withdraw cards from keywords', async () => {
+test('builds balance, active wound, and closed withdraw cards from keywords', async () => {
   const server = await startServer();
 
   try {
@@ -3164,13 +3164,14 @@ test('builds balance, active wound, and withdraw cards from keywords', async () 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     const balanceLog = logs.find((log) => log.creditAction === 'balance_card');
     const activeLog = logs.find((log) => log.creditAction === 'active_wounds_card');
-    const withdrawLog = logs.find((log) => log.creditAction === 'withdraw_card');
+    const withdrawLog = logs.find((log) => log.creditAction === 'withdraw_closed');
 
     assert.equal(balanceLog.creditBalance, 120);
     assert.equal(balanceLog.activeWoundAmount, 100);
     assert.equal(activeLog.activeWoundCount, 1);
     assert.equal(activeLog.activeWoundAmount, 100);
     assert.equal(withdrawLog.withdrawableBalance, 20);
+    assert.match(JSON.stringify(withdrawLog.creditReplyMessages), /18:00-08:00/);
   } finally {
     await server.stop();
   }
@@ -3381,6 +3382,65 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
   }
 });
 
+test('withdraw requests stay open until 08:00 Bangkok and then close with a notice', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+
+    fs.writeFileSync(CREDIT_FILE, JSON.stringify([
+      {
+        userId: 'UwithdrawWindow',
+        balance: 250,
+        totalAdded: 250,
+        transactions: [
+          {
+            id: 'seed-withdraw-window',
+            type: 'test_credit_seed',
+            amount: 250,
+            rawText: 'seed',
+            displayName: 'Window User',
+            balanceAfter: 250,
+            timestamp: 1710000000000,
+            time: '2024-03-09T16:00:00.000Z'
+          }
+        ],
+        updatedTimestamp: 1710000000000,
+        updatedTime: '2024-03-09T16:00:00.000Z'
+      }
+    ], null, 2), 'utf8');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UwithdrawWindow' },
+        replyToken: 'reply-withdraw-before-eight',
+        message: { type: 'text', id: 'm-withdraw-before-eight', text: 'ถอนยอดเงิน' },
+        timestamp: Date.parse('2024-03-09T00:50:00.000Z')
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UwithdrawWindow' },
+        replyToken: 'reply-withdraw-at-eight',
+        message: { type: 'text', id: 'm-withdraw-at-eight', text: 'ถอนยอดเงิน' },
+        timestamp: Date.parse('2024-03-09T01:00:00.000Z')
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const beforeEightLog = logs.find((log) => log.timestamp === Date.parse('2024-03-09T00:50:00.000Z'));
+    const atEightLog = logs.find((log) => log.timestamp === Date.parse('2024-03-09T01:00:00.000Z'));
+    assert.equal(beforeEightLog.creditAction, 'withdraw_form');
+    assert.equal(atEightLog.creditAction, 'withdraw_closed');
+    assert.match(JSON.stringify(atEightLog.creditReplyMessages), /18:00-08:00/);
+  } finally {
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+    await server.stop();
+  }
+});
+
 test('admin can cancel a pending withdrawal with a reason without deducting credit', async () => {
   const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
 
@@ -3457,6 +3517,73 @@ test('admin can cancel a pending withdrawal with a reason without deducting cred
     assert.ok(cancelLog);
     assert.equal(cancelLog.withdrawalCancelReason, 'เลขบัญชีไม่ถูกต้อง');
     assert.equal(cancelLog.withdrawalPushStatus, 'skipped');
+  } finally {
+    fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
+    await server.stop();
+  }
+});
+
+test('withdrawals page prunes processed requests and keeps only pending requests', async () => {
+  const server = await startServer();
+
+  try {
+    fs.writeFileSync(WITHDRAWAL_FILE, JSON.stringify([
+      {
+        id: 'withdraw-done',
+        userId: 'Udone',
+        displayName: 'Done User',
+        bankName: 'Bank A',
+        accountNumber: '111',
+        amount: 100,
+        availableBalance: 100,
+        status: 'completed',
+        createdTimestamp: 1710000000000,
+        createdTime: '09/03/2567 23:00:00'
+      },
+      {
+        id: 'withdraw-cancelled',
+        userId: 'Ucancelled',
+        displayName: 'Cancelled User',
+        bankName: 'Bank B',
+        accountNumber: '222',
+        amount: 200,
+        availableBalance: 200,
+        status: 'cancelled',
+        createdTimestamp: 1710000001000,
+        createdTime: '09/03/2567 23:00:01'
+      },
+      {
+        id: 'withdraw-pending',
+        userId: 'Upending',
+        displayName: 'Pending User',
+        bankName: 'Bank C',
+        accountNumber: '333',
+        amount: 300,
+        availableBalance: 300,
+        status: 'pending',
+        createdTimestamp: 1710000002000,
+        createdTime: '09/03/2567 23:00:02'
+      }
+    ], null, 2), 'utf8');
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+
+    const withdrawalsPage = await fetch(`${server.baseUrl}/withdrawals`, { headers: { cookie } });
+    const html = await withdrawalsPage.text();
+    assert.equal(withdrawalsPage.status, 200);
+    assert.match(html, /Pending User/);
+    assert.doesNotMatch(html, /Done User/);
+    assert.doesNotMatch(html, /Cancelled User/);
+
+    const withdrawals = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
+    assert.equal(withdrawals.length, 1);
+    assert.equal(withdrawals[0].id, 'withdraw-pending');
   } finally {
     fs.writeFileSync(WITHDRAWAL_FILE, '[]', 'utf8');
     await server.stop();

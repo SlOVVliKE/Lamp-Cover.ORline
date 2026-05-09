@@ -53,6 +53,7 @@ const MAX_CREDIT_TRANSACTIONS = 200;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
 const WITHDRAWAL_OPEN_HOUR = 18;
+const WITHDRAWAL_CLOSE_HOUR = 8;
 const WITHDRAWAL_TOKEN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const BUILDER_PRICE_REPEAT_INTERVAL_MS = (() => {
   const value = Number(process.env.BUILDER_PRICE_REPEAT_INTERVAL_MS);
@@ -270,12 +271,29 @@ function writeCredits(credits) {
   writeJsonArray(CREDIT_FILE, sortCredits(credits), MAX_CREDITS);
 }
 
-function readWithdrawals() {
+function isPendingWithdrawal(withdrawal) {
+  return String(withdrawal?.status || 'pending') === 'pending';
+}
+
+function readAllWithdrawals() {
   return sortWithdrawals(readJsonArray(WITHDRAWAL_FILE, 'withdrawals.json'));
 }
 
+function readWithdrawals() {
+  return sortWithdrawals(readAllWithdrawals().filter(isPendingWithdrawal));
+}
+
 function writeWithdrawals(withdrawals) {
-  writeJsonArray(WITHDRAWAL_FILE, sortWithdrawals(withdrawals), MAX_WITHDRAWALS);
+  writeJsonArray(WITHDRAWAL_FILE, sortWithdrawals(withdrawals).filter(isPendingWithdrawal), MAX_WITHDRAWALS);
+}
+
+function pruneProcessedWithdrawals() {
+  const withdrawals = readAllWithdrawals();
+  const pendingWithdrawals = withdrawals.filter(isPendingWithdrawal);
+  if (pendingWithdrawals.length !== withdrawals.length) {
+    writeWithdrawals(pendingWithdrawals);
+  }
+  return sortWithdrawals(pendingWithdrawals);
 }
 
 function escapeHtml(value) {
@@ -1992,6 +2010,27 @@ function buildWithdrawFlex(snapshot) {
   };
 }
 
+function buildWithdrawalClosedFlex(snapshot) {
+  return {
+    type: 'flex',
+    altText: 'ยังไม่ถึงเวลาเปิดถอนเครดิต',
+    contents: buildCreditBubble({
+      title: '⏰ ยังไม่เปิดถอน',
+      titleColor: '#F59E0B',
+      bodyColor: '#F59E0B',
+      subtitle: 'ยอดที่ถอนได้',
+      amount: formatPoints(snapshot.withdrawableBalance),
+      rows: [
+        flexRow('เวลาเปิดถอน', '18:00-08:00 น.', '#F59E0B'),
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B'),
+        flexRow('แผลที่ค้าง', `${snapshot.activeWounds.length} รายการ`, '#EF4444')
+      ],
+      footer: 'เปิดให้ส่งคำขอถอนหลัง 18:00 ถึง 08:00 น. เท่านั้น'
+    })
+  };
+}
+
 function buildWithdrawalRequestFlex(snapshot, formUrl) {
   return {
     type: 'flex',
@@ -2087,7 +2126,8 @@ function getBangkokHour(timestamp = Date.now()) {
 }
 
 function isWithdrawalRequestOpen(timestamp = Date.now()) {
-  return getBangkokHour(timestamp) >= WITHDRAWAL_OPEN_HOUR;
+  const hour = getBangkokHour(timestamp);
+  return hour >= WITHDRAWAL_OPEN_HOUR || hour < WITHDRAWAL_CLOSE_HOUR;
 }
 
 function buildWoundPostbackData(action, woundId, extras = {}) {
@@ -2378,7 +2418,18 @@ function handleCreditEvent(event, publicBaseUrl = '') {
     };
   }
 
-  if (keyword === 'withdraw' && isWithdrawalRequestOpen(event.timestamp || Date.now())) {
+  if (keyword === 'withdraw') {
+    if (!isWithdrawalRequestOpen(event.timestamp || Date.now())) {
+      return {
+        type: 'withdraw_closed',
+        creditBalance: snapshot.credit.balance,
+        activeWoundAmount: snapshot.activeWoundAmount,
+        withdrawableBalance: snapshot.withdrawableBalance,
+        activeWoundCount: snapshot.activeWounds.length,
+        replyMessages: [buildWithdrawalClosedFlex(snapshot)]
+      };
+    }
+
     const pendingWithdrawal = getPendingWithdrawalForUser(source.userId);
     if (pendingWithdrawal) {
       return {
@@ -5711,7 +5762,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
 });
 
 app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
-  const withdrawals = readWithdrawals();
+  const withdrawals = pruneProcessedWithdrawals();
   const cards = withdrawals.map((withdrawal, index) => {
     const avatar = withdrawal.pictureUrl
       ? `<img class="avatar avatar-image" src="${escapeHtml(withdrawal.pictureUrl)}" alt="">`
