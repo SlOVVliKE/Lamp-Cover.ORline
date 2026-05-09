@@ -3335,6 +3335,8 @@ test('after 18:00 withdraw button opens a request form and stores withdrawal req
     assert.match(withdrawalsHtml, /เสร็จสิ้น/);
     assert.match(withdrawalsHtml, /ยกเลิก/);
     assert.match(withdrawalsHtml, /name="reason"/);
+    assert.match(withdrawalsHtml, /href="\/credits"/);
+    assert.match(withdrawalsHtml, />หน้าเครดิต</);
 
     const [pendingWithdrawal] = JSON.parse(fs.readFileSync(WITHDRAWAL_FILE, 'utf8'));
     assert.equal(pendingWithdrawal.status, 'pending');
@@ -3532,6 +3534,8 @@ test('credits page requires login and supports manual top up by user name', asyn
     assert.equal(page.status, 200);
     assert.match(html, /Bank Thirakan/);
     assert.match(html, /No Credit User/);
+    assert.match(html, /href="\/withdrawals"/);
+    assert.match(html, />หน้าถอน</);
     assert.match(html, /placeholder="ค้นหาชื่อ"/);
     assert.match(html, /src="https:\/\/example\.com\/bank\.jpg"/);
     assert.match(html, /ยอดคงเหลือ/);

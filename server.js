@@ -5470,6 +5470,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       display: grid;
       grid-template-columns: repeat(2, auto);
       gap: 8px;
+      justify-content: end;
     }
     .button, .logout-button {
       display: inline-flex;
@@ -5630,6 +5631,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       </div>
       <div class="actions">
         <a class="button" href="/credits">Refresh</a>
+        <a class="button" href="/withdrawals">หน้าถอน</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
         </form>
@@ -5795,9 +5797,10 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
       font-size: 12px;
     }
     .actions {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(2, auto);
       gap: 8px;
-      align-items: center;
+      justify-content: end;
     }
     .button, .logout-button {
       display: inline-flex;
@@ -5949,6 +5952,7 @@ app.get('/withdrawals', requireCreditsAdminAuth, (req, res) => {
       </div>
       <div class="actions">
         <a class="button" href="/withdrawals">Refresh</a>
+        <a class="button" href="/credits">หน้าเครดิต</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
         </form>
