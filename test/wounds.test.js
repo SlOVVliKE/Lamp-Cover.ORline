@@ -1340,6 +1340,137 @@ test('rejects slash custom prices, old a prices, and ชตย stakes without re
   }
 });
 
+test('warns when the same user repeats the same trade three times in an open round', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Grepeat-trade');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-trade', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000058000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-trade', userId: 'UrepeatTrade' },
+        message: { type: 'text', id: 'm-repeat-trade-1', text: '+5ถ.200' },
+        timestamp: 1710000059000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-trade', userId: 'UotherTrade' },
+        message: { type: 'text', id: 'm-repeat-other-trade', text: 'ชล1000' },
+        timestamp: 1710000060000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-trade', userId: 'UrepeatTrade' },
+        message: { type: 'text', id: 'm-repeat-trade-2', text: '+5ถ.200' },
+        timestamp: 1710000061000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-trade', userId: 'UrepeatTrade' },
+        message: { type: 'text', id: 'm-repeat-trade-3', text: '+5ถ.200' },
+        timestamp: 1710000062000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const warningLog = logs.find((log) => log.repeatedTradeWarning);
+    const repeatedTradeLogs = logs.filter((log) => log.userId === 'UrepeatTrade' && log.tradeKeyword === '+5ถ');
+
+    assert.equal(repeatedTradeLogs.length, 3);
+    assert.equal(repeatedTradeLogs.every((log) => log.tradeAmount === '200'), true);
+    assert.ok(warningLog);
+    assert.equal(warningLog.message, '+5ถ.200');
+    assert.equal(warningLog.repeatedTradeCount, 3);
+    assert.equal(warningLog.repeatedTradeReplyTexts.length, 1);
+    assert.match(warningLog.repeatedTradeReplyTexts[0], /ตอบติดกัน ขยับติดกัน/);
+    assert.match(warningLog.repeatedTradeReplyTexts[0], /รอการตลาด/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('counts repeated trade warnings separately for each opened round', async () => {
+  const server = await startServer({ LINE_CHANNEL_ACCESS_TOKEN: '' });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Grepeat-per-round');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-round-1-open', text: 'เปิด รอบหนึ่ง' },
+        timestamp: 1710000063000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'UrepeatPerRound' },
+        message: { type: 'text', id: 'm-repeat-round-1-trade-1', text: '+5ถ.200' },
+        timestamp: 1710000064000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'UrepeatPerRound' },
+        message: { type: 'text', id: 'm-repeat-round-1-trade-2', text: '+5ถ.200' },
+        timestamp: 1710000065000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-round-1-close', text: 'ปิด' },
+        timestamp: 1710000066000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-round-1-result-1', text: 'แจ้งผล 300' },
+        timestamp: 1710000067000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-round-1-result-2', text: 'แจ้งผล 300' },
+        timestamp: 1710000068000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-repeat-round-2-open', text: 'เปิด รอบสอง' },
+        timestamp: 1710000069000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Grepeat-per-round', userId: 'UrepeatPerRound' },
+        message: { type: 'text', id: 'm-repeat-round-2-trade-1', text: '+5ถ.200' },
+        timestamp: 1710000070000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const repeatedTradeLogs = logs.filter((log) => log.userId === 'UrepeatPerRound' && log.tradeKeyword === '+5ถ');
+
+    assert.equal(repeatedTradeLogs.length, 3);
+    assert.equal(logs.some((log) => log.repeatedTradeWarning), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('requires duplicate result command before closing active wounds', async () => {
   const server = await startServer();
 

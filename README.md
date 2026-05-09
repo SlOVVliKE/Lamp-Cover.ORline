@@ -479,10 +479,12 @@ Examples:
 ```
 
 Custom price keywords use Thai sides only: `ชล`, `ชย`, `ชถ`, `ล`, `ถ`, `ย`, `ไล่`, `ถอย`, `ยั่ง`, `มา`, `ช่างไล่`, `ช่างยั่ง`, `ช่างถอย`.
+Normal trade keywords also accept a dot before the stake, for example `+5ถ.200`.
 Use full price numbers with `-` for ranges only, for example `300-340ล500` or `380-425มา2000`; `/` and short ranges like `8-25มา2000` are not accepted.
 `ชตย`, `ช่างตีไม่ติด`, and `ช่างตียก` are no-builder fallback markers. They can be placed after a custom price or used as the accepter reply keyword.
 If a custom price has a stake and a no-builder fallback marker, the user must have reserve credit for 2x the stake, for example `330-350ล1000ชตย` requires 2000 available credit.
 If the admin later sets a builder price for that round, marked wounds are automatically cancelled and no credit is deducted.
+If the same user sends the same trade in the same open round 3 times, the bot replies with a market-wait warning.
 
 Pairing flow:
 

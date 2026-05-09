@@ -75,6 +75,12 @@ const BUILDER_PRICE_REPEAT_INTERVAL_MS = (() => {
 const BUILDER_PRICE_REPEAT_ENABLED = process.env.BUILDER_PRICE_REPEAT_ENABLED !== 'false';
 const builderPriceRepeatTimers = new Map();
 const NO_QUEUE_REPLY = 'ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀';
+const REPEATED_TRADE_WARNING_THRESHOLD = 3;
+const REPEATED_TRADE_WARNING_REPLY = [
+  'ตอบติดกัน ขยับติดกัน 📍',
+  '',
+  '💰รอการตลาด💰'
+].join('\n');
 const MONGO_COLLECTION_BY_FILE = new Map([
   [LOG_FILE, 'lamp_logs'],
   [ADMIN_FILE, 'lamp_admins'],
@@ -700,7 +706,7 @@ function parseTradeMessage(message) {
   if (!text) return null;
 
   for (const item of TRADE_KEYWORDS) {
-    const pattern = new RegExp(`^${escapeRegExp(item.keyword)}\\s*(\\d*)$`, 'i');
+    const pattern = new RegExp(`^${escapeRegExp(item.keyword)}(?:[\\s.]+)?(\\d*)$`, 'i');
     const match = text.match(pattern);
 
     if (match) {
@@ -3293,6 +3299,44 @@ function trackGroupMessage(event) {
   return messageEntry;
 }
 
+function getTradeRepeatSignature(trade) {
+  if (!trade) return '';
+
+  return [
+    trade.side || '',
+    trade.keyword || '',
+    trade.amount || '',
+    trade.priceRaw || '',
+    trade.fallbackNoBuilder ? 'fallback' : ''
+  ].join('|');
+}
+
+function handleRepeatedTradeWarning(trackedMessage) {
+  if (!trackedMessage?.trade || !trackedMessage.groupId || !trackedMessage.roundId || !trackedMessage.userId) {
+    return null;
+  }
+
+  const signature = getTradeRepeatSignature(trackedMessage.trade);
+  if (!signature) return null;
+
+  const repeatedTrades = readMessages().filter((message) => (
+    message.groupId === trackedMessage.groupId &&
+    message.roundId === trackedMessage.roundId &&
+    message.userId === trackedMessage.userId &&
+    getTradeRepeatSignature(message.trade) === signature
+  ));
+
+  if (repeatedTrades.length !== REPEATED_TRADE_WARNING_THRESHOLD) {
+    return null;
+  }
+
+  return {
+    type: 'repeated_trade_warning',
+    repeatedTradeCount: repeatedTrades.length,
+    replyTexts: [REPEATED_TRADE_WARNING_REPLY]
+  };
+}
+
 function findTrackedMessage(messageId) {
   if (!messageId) return null;
   return readMessages().find((message) => message.id === messageId) || null;
@@ -4050,6 +4094,7 @@ app.post(
           const behindHouseAction = handleBehindHouseCommand(event);
           const betGroupInviteAction = handleBetGroupInviteEvent(event);
           const trackedMessage = trackGroupMessage(event);
+          const repeatedTradeAction = handleRepeatedTradeWarning(trackedMessage);
           const woundAction = await createWoundFromReply(event);
           const woundCancelAction = await handleWoundCancelPostback(event);
           const unsendAction = await handleUnsendEvent(event);
@@ -4260,6 +4305,18 @@ app.post(
           if (trackedMessage?.trade) {
             logEntry.tradeKeyword = trackedMessage.trade.keyword;
             logEntry.tradeAmount = trackedMessage.trade.amount;
+          }
+
+          if (repeatedTradeAction) {
+            logEntry.repeatedTradeWarning = true;
+            logEntry.repeatedTradeCount = repeatedTradeAction.repeatedTradeCount || 0;
+            logEntry.repeatedTradeReplyTexts = Array.isArray(repeatedTradeAction.replyTexts)
+              ? repeatedTradeAction.replyTexts
+              : [];
+
+            if (logEntry.repeatedTradeReplyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, logEntry.repeatedTradeReplyTexts));
+            }
           }
 
           if (unsendAction) {
