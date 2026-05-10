@@ -1817,6 +1817,69 @@ test('sends open queue card only from admin reminder keywords', async () => {
   }
 });
 
+test('adds close image after the close queue text reply', async () => {
+  const replyRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    if (req.url === '/v2/bot/message/reply') {
+      replyRequests.push(JSON.parse(bodyText || '{}'));
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl,
+    PUBLIC_BASE_URL: 'https://lamp-cover.example'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gclose-image', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gclose-image', userId: 'Uadmin' },
+        replyToken: 'reply-close-open',
+        message: { type: 'text', id: 'm-close-image-open', text: 'เปิด แอ็ดเทวดา' },
+        timestamp: 1710000210000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gclose-image', userId: 'Uadmin' },
+        replyToken: 'reply-close-image',
+        message: { type: 'text', id: 'm-close-image-close', text: 'ปิด' },
+        timestamp: 1710000211000
+      }
+    ]);
+
+    const closeReply = replyRequests.find((request) => request.replyToken === 'reply-close-image');
+    assert.ok(closeReply);
+    assert.equal(closeReply.messages.length, 2);
+    assert.equal(closeReply.messages[0].type, 'text');
+    assert.match(closeReply.messages[0].text, /❌❌❌❌ ปิด ❌❌❌❌/);
+    assert.deepEqual(closeReply.messages[1], {
+      type: 'image',
+      originalContentUrl: 'https://lamp-cover.example/assets/close.jpg',
+      previewImageUrl: 'https://lamp-cover.example/assets/close.jpg'
+    });
+
+    const imageResponse = await fetch(`${server.baseUrl}/assets/close.jpg`);
+    assert.equal(imageResponse.status, 200);
+    assert.match(imageResponse.headers.get('content-type') || '', /image\/jpeg/);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('confirms result twice and records the queue price verdict', async () => {
   const server = await startServer();
 

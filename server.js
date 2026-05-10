@@ -54,6 +54,8 @@ const ROUND_FILE = path.join(__dirname, 'rounds.json');
 const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
 const CREDIT_FILE = path.join(__dirname, 'credits.json');
 const WITHDRAWAL_FILE = path.join(__dirname, 'withdrawals.json');
+const CLOSE_IMAGE_FILE = path.join(__dirname, 'ปิด.jpg');
+const CLOSE_IMAGE_ROUTE = '/assets/close.jpg';
 const MAX_LOGS = 1000;
 const MAX_ADMINS = 1000;
 const MAX_MESSAGES = 3000;
@@ -1131,6 +1133,22 @@ function shouldSendRoundReminder(round, reminderMode) {
 
 function buildCloseReply(round) {
   return `❌❌❌❌ ปิด ❌❌❌❌\n\n3 2 1 ไป๊!! 🚀🚀🚀\n\n${round.queueName}\n\n⛔หลังปิดไม่ติดทุกกรณี⛔`;
+}
+
+function buildCloseImageMessage(publicBaseUrl) {
+  const baseUrl = String(publicBaseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl || !fs.existsSync(CLOSE_IMAGE_FILE)) return null;
+
+  const imageUrl = `${baseUrl}${CLOSE_IMAGE_ROUTE}`;
+  return {
+    type: 'image',
+    originalContentUrl: imageUrl,
+    previewImageUrl: imageUrl
+  };
+}
+
+function buildCloseReplyMessages(round, publicBaseUrl) {
+  return [buildCloseReply(round), buildCloseImageMessage(publicBaseUrl)].filter(Boolean);
 }
 
 function buildPendingResultReply(round) {
@@ -3879,7 +3897,7 @@ function closeWoundsForRound(event, result, round) {
   };
 }
 
-function handleQueueAdminCommand(event) {
+function handleQueueAdminCommand(event, publicBaseUrl = '') {
   if (!isGroupTextMessage(event)) return null;
 
   const source = event.source || {};
@@ -4000,7 +4018,7 @@ function handleQueueAdminCommand(event) {
     return {
       type: 'round_closed',
       round: closedRound,
-      replyTexts: [buildCloseReply(closedRound)]
+      replyTexts: buildCloseReplyMessages(closedRound, publicBaseUrl)
     };
   }
 
@@ -4105,6 +4123,16 @@ ensureJsonFile(QUEUE_LIST_FILE);
 ensureJsonFile(CREDIT_FILE);
 ensureJsonFile(WITHDRAWAL_FILE);
 
+app.get(CLOSE_IMAGE_ROUTE, (req, res) => {
+  if (!fs.existsSync(CLOSE_IMAGE_FILE)) {
+    res.status(404).send('close image not found');
+    return;
+  }
+
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.sendFile(CLOSE_IMAGE_FILE);
+});
+
 // LINE signature verification needs the exact raw request body.
 app.post(
   '/webhook',
@@ -4129,7 +4157,7 @@ app.post(
           const bindEntry = bindGroupFromEvent(event);
           const queueListEntry = handleQueueListMessage(event);
           const queueLookupAction = handleQueueLookupCommand(event);
-          const queueAction = handleQueueAdminCommand(event);
+          const queueAction = handleQueueAdminCommand(event, publicBaseUrl);
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
           const blackAccountAction = handleBlackAccountCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
