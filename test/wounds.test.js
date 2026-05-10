@@ -1760,7 +1760,7 @@ test('replies with the queue card format after setting the builder price', async
   }
 });
 
-test('treats a single builder price as a 50 point range', async () => {
+test('keeps a single builder price as one exact price', async () => {
   const server = await startServer();
 
   try {
@@ -1794,13 +1794,13 @@ test('treats a single builder price as a 50 point range', async () => {
 
     const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
     assert.equal(rounds[0].queueName, 'ศราช');
-    assert.equal(rounds[0].priceRaw, '350-400');
+    assert.equal(rounds[0].priceRaw, '350');
     assert.equal(rounds[0].priceLow, 350);
-    assert.equal(rounds[0].priceHigh, 400);
+    assert.equal(rounds[0].priceHigh, 350);
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     const priceLog = logs.find((log) => log.queueAction === 'builder_price_set');
-    assert.deepEqual(priceLog.queueReplyTexts, ['ศราช\n\nช่าง 350-400 ⛔️\n\n🚀🚀🚀🚀🚀']);
+    assert.deepEqual(priceLog.queueReplyTexts, ['ศราช\n\nช่าง 350 ⛔️\n\n🚀🚀🚀🚀🚀']);
   } finally {
     await server.stop();
   }

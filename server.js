@@ -984,20 +984,7 @@ function parseSettlementPrice(value) {
 }
 
 function parseBuilderPriceValue(value) {
-  const range = parsePriceRange(value);
-  if (range) return range;
-
-  const single = String(value || '').trim().match(/^(\d+)$/);
-  if (!single) return null;
-
-  const low = Number(single[1]);
-  if (!Number.isFinite(low)) return null;
-
-  return {
-    raw: `${low}-${low + 50}`,
-    low,
-    high: low + 50
-  };
+  return parseSettlementPrice(value);
 }
 
 function parseOpenCommand(message) {
