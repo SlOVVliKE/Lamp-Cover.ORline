@@ -2405,6 +2405,131 @@ test('saves a numbered queue list without a blank line before items', async () =
   }
 });
 
+test('saves a numbered queue list without a title and keeps footer as note', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      '1.แอ็ดเทวดา',
+      '2.ศ.ราชวงค์',
+      '3.ส.พรพิมล',
+      '4.นครเสาเล้า',
+      '5.ทองภักดี',
+      '6.สิงห์บึงบอก',
+      '7.เทพพนม',
+      '8.ปุ๋ยเมฆ',
+      '9.กะทิทองคำ',
+      '10.ส.กวิน+หนึ่งลำปาง',
+      '11.เบิกฟ้านครแก ท่อ6"',
+      '12.ครูทับเบิกฟ้า',
+      '13.พรพระแก้ว1',
+      '14.ลูกเจ้าพ่อเมืองแสน',
+      '15.พรพระแก้ว2',
+      '16.สางเทพ',
+      '17.ศีรินภา',
+      '18.ควายเผือก',
+      '19.วัยรุ่นพนมไพร',
+      '20.ส.สิ่งใจ',
+      '',
+      '📍',
+      'ตุลาการกะทิถอยฟ้า+พรายด่าน้อยเสียงสวรรค์',
+      '          (งานประเพณีฟีรุกที่ยิ่ง)'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-numbered-titleless', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-numbered-titleless', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-numbered-titleless', text: queueText },
+        timestamp: 1710000090750
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.equal(queueLists[0].title, '');
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      [
+        'แอ็ดเทวดา',
+        'ศ.ราชวงค์',
+        'ส.พรพิมล',
+        'นครเสาเล้า',
+        'ทองภักดี',
+        'สิงห์บึงบอก',
+        'เทพพนม',
+        'ปุ๋ยเมฆ',
+        'กะทิทองคำ',
+        'ส.กวิน+หนึ่งลำปาง',
+        'เบิกฟ้านครแก ท่อ6"',
+        'ครูทับเบิกฟ้า',
+        'พรพระแก้ว1',
+        'ลูกเจ้าพ่อเมืองแสน',
+        'พรพระแก้ว2',
+        'สางเทพ',
+        'ศีรินภา',
+        'ควายเผือก',
+        'วัยรุ่นพนมไพร',
+        'ส.สิ่งใจ'
+      ]
+    );
+    assert.equal(
+      queueLists[0].note,
+      '📍\nตุลาการกะทิถอยฟ้า+พรายด่าน้อยเสียงสวรรค์\n(งานประเพณีฟีรุกที่ยิ่ง)'
+    );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.equal(queueListLog.queueListItemCount, 20);
+    assert.match(queueListLog.queueListReplyTexts[0], /^คิวจุด✅\n\nแอ็ดเทวดา\nศ\.ราชวงค์/);
+    assert.equal(queueListLog.queueListReplyTexts[0].includes('ตุลาการกะทิถอยฟ้า'), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with queue list guidance when queue list cannot be parsed', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-invalid-form', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-invalid-form', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-invalid-form', text: 'คิวจุดรายการ\n\n📍\nยังไม่มีรายชื่อคิว' },
+        timestamp: 1710000090800
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const failedLog = logs.find((log) => log.queueListFailed);
+    assert.ok(failedLog);
+    assert.equal(failedLog.queueListSaved, false);
+    assert.equal(failedLog.queueListError, 'missing_items');
+    assert.match(failedLog.queueListReplyTexts[0], /คิวไม่ติด/);
+    assert.match(failedLog.queueListReplyTexts[0], /ยังไม่เจอรายชื่อคิว/);
+    assert.match(failedLog.queueListReplyTexts[0], /1\.ชื่อคิว/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('saves a queue list when the first line is จุดรายการ', async () => {
   const server = await startServer();
 

@@ -349,6 +349,20 @@ Numbered queue lists without a blank line before the items are also supported. S
 3.ศ.ราชวงศ์
 ```
 
+This compact numbered format is also supported even when there is no title line:
+
+```text
+คิวจุดรายการ
+1.แอ็ดเทวดา
+2.ศ.ราชวงค์
+3.ส.พรพิมล
+
+📍
+ข้อความท้ายคิวหรือชื่องาน
+```
+
+If the bot cannot find any queue names, it replies `คิวไม่ติด ❌` with the exact problem and an example of how to fix the format.
+
 Saved queue lists can be viewed at:
 
 After the queue list is saved, the bot replies in the group:

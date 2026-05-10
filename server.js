@@ -800,6 +800,10 @@ function cleanQueueItemLine(line) {
   return String(line || '').replace(/^\d+\s*[.)]\s*/, '').trim();
 }
 
+function isQueueFooterLine(line) {
+  return /^📍/.test(String(line || '').trim());
+}
+
 function getQueueListKeyword(line) {
   return QUEUE_LIST_KEYWORDS.find((keyword) => line === keyword || line.startsWith(`${keyword} `)) || '';
 }
@@ -843,14 +847,28 @@ function parseQueueListMessage(message) {
   const dateText = dateLineIndex >= 0 ? headerParts[dateLineIndex] : '';
   const title = headerParts.filter((_, index) => index !== dateLineIndex).join(' ').trim();
   const itemLines = [];
+  const noteLines = [];
   let note = '';
+  let isFooterSection = false;
 
   for (const line of lines.slice(itemStartIndex)) {
-    if (!line) continue;
+    if (!line) {
+      if (firstNumberedItemIndex >= 0 && itemLines.length > 0) {
+        isFooterSection = true;
+      }
+      continue;
+    }
     if (isQueueSeparatorLine(line)) continue;
     if (/^หมายเหตุ/.test(line)) {
       note = line;
       break;
+    }
+    if (itemLines.length === 0 && isQueueFooterLine(line)) {
+      isFooterSection = true;
+    }
+    if (isFooterSection) {
+      noteLines.push(line);
+      continue;
     }
 
     const itemLine = cleanQueueItemLine(line);
@@ -859,8 +877,15 @@ function parseQueueListMessage(message) {
     }
   }
 
-  if (!title || itemLines.length === 0) {
-    return null;
+  if (!note && noteLines.length > 0) {
+    note = noteLines.join('\n');
+  }
+
+  if (itemLines.length === 0) {
+    return {
+      error: 'missing_items',
+      rawText: String(message || '')
+    };
   }
 
   return {
@@ -873,6 +898,34 @@ function parseQueueListMessage(message) {
     note,
     rawText: String(message || '')
   };
+}
+
+function buildQueueListErrorReply(error) {
+  if (error === 'missing_items') {
+    return [
+      'คิวไม่ติด ❌',
+      '',
+      'ปัญหา: ยังไม่เจอรายชื่อคิว',
+      'วิธีแก้: หลังคำว่า คิวจุดรายการ ให้ใส่รายชื่อคิวทีละบรรทัด',
+      '',
+      'ตัวอย่าง:',
+      'คิวจุดรายการ',
+      '1.ชื่อคิว',
+      '2.ชื่อคิว',
+      '',
+      'หรือ',
+      'คิวจุดรายการ',
+      'ชื่อคิว',
+      'ชื่อคิว'
+    ].join('\n');
+  }
+
+  return [
+    'คิวไม่ติด ❌',
+    '',
+    'ปัญหา: รูปแบบคิวจุดยังอ่านไม่ได้',
+    'วิธีแก้: ขึ้นต้นด้วย คิวจุดรายการ แล้วใส่ชื่อคิวทีละบรรทัด'
+  ].join('\n');
 }
 
 function formatClockTime(timestamp) {
@@ -3721,6 +3774,15 @@ function handleQueueListMessage(event) {
 
   const queueList = parseQueueListMessage(getMessageText(event));
   if (!queueList) return null;
+  if (queueList.error) {
+    return {
+      type: 'queue_list_failed',
+      saved: false,
+      error: queueList.error,
+      rawText: queueList.rawText,
+      replyTexts: [buildQueueListErrorReply(queueList.error)]
+    };
+  }
 
   const nowTimestamp = event.timestamp || Date.now();
   const entry = {
@@ -3741,6 +3803,8 @@ function handleQueueListMessage(event) {
   writeQueueLists([entry, ...queueLists]);
   return {
     ...entry,
+    type: 'queue_list_saved',
+    saved: true,
     replyTexts: [buildQueueListSavedReply(entry)]
   };
 }
@@ -4107,9 +4171,11 @@ app.post(
           }
 
           if (queueListEntry) {
-            logEntry.queueListSaved = true;
-            logEntry.queueListTitle = queueListEntry.title;
-            logEntry.queueListItemCount = queueListEntry.items.length;
+            logEntry.queueListSaved = queueListEntry.saved !== false;
+            logEntry.queueListFailed = queueListEntry.saved === false;
+            logEntry.queueListError = queueListEntry.error || '';
+            logEntry.queueListTitle = queueListEntry.title || '';
+            logEntry.queueListItemCount = Array.isArray(queueListEntry.items) ? queueListEntry.items.length : 0;
             logEntry.queueListReplyTexts = Array.isArray(queueListEntry.replyTexts) ? queueListEntry.replyTexts : [];
 
             if (Array.isArray(queueListEntry.replyTexts) && queueListEntry.replyTexts.length > 0) {
