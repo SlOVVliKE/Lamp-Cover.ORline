@@ -1610,6 +1610,76 @@ test('opens a queue round and ignores new wounds after close', async () => {
   }
 });
 
+test('admin can cancel the current queue and every active wound by queue name', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-cancel');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UcancelQueueOpen', 200, 'm-credit-queue-cancel-open', 1710000190000),
+      creditEvent('UcancelQueueAccept', 200, 'm-credit-queue-cancel-accept', 1710000190001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-cancel', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-cancel-open', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000191000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-cancel', userId: 'UcancelQueueOpen' },
+        message: { type: 'text', id: 'm-queue-cancel-trade', text: 'ชล200' },
+        timestamp: 1710000192000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-cancel', userId: 'UcancelQueueAccept' },
+        message: { type: 'text', id: 'm-queue-cancel-accept', quotedMessageId: 'm-queue-cancel-trade', text: 'ต' },
+        timestamp: 1710000193000
+      },
+      confirmPairEvent('Gqueue-cancel', 'UcancelQueueOpen', 'm-queue-cancel-accept', 'm-queue-cancel-confirm', 1710000193500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-cancel', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-cancel-command', text: 'ยกเลิกกอดก้อนเมฆ' },
+        timestamp: 1710000194000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-cancel', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-cancel-open-next', text: 'เปิด น้องเหมียว' },
+        timestamp: 1710000195000
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].status, 'cancelled');
+    assert.equal(wounds[0].cancelReason, 'queue_cancelled');
+    assert.equal(wounds[0].cancelledByUserId, 'Uadmin');
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].queueName, 'น้องเหมียว');
+    assert.equal(rounds[0].status, 'open');
+    assert.equal(rounds[1].queueName, 'กอดก้อนเมฆ');
+    assert.equal(rounds[1].status, 'cancelled');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const cancelLog = logs.find((log) => log.queueAction === 'round_cancelled');
+    assert.equal(cancelLog.cancelledCount, 1);
+    assert.match(cancelLog.queueReplyTexts[0], /ยกเลิกคิว: กอดก้อนเมฆ/);
+    assert.match(cancelLog.queueReplyTexts[0], /ยกเลิกทุกแผล/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('opens a queue round waiting for builder price from admin keyword', async () => {
   const server = await startServer();
 
@@ -1685,6 +1755,52 @@ test('replies with the queue card format after setting the builder price', async
     const priceLog = logs.find((log) => log.queueAction === 'builder_price_set');
 
     assert.deepEqual(priceLog.queueReplyTexts, ['ศราช\n\nช่าง 350-380 ⛔️\n\n🚀🚀🚀🚀🚀']);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('treats a single builder price as a 50 point range', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gbuilder-single-price', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-single-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-single-open', text: 'เปิด ศราช' },
+        timestamp: 1710000001100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-single-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-single-close', text: 'ปิด' },
+        timestamp: 1710000002100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gbuilder-single-price', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-builder-single-price', text: 'ราคาช่าง350' },
+        timestamp: 1710000003100
+      }
+    ]);
+
+    const rounds = await (await fetch(`${server.baseUrl}/api/rounds`)).json();
+    assert.equal(rounds[0].queueName, 'ศราช');
+    assert.equal(rounds[0].priceRaw, '350-400');
+    assert.equal(rounds[0].priceLow, 350);
+    assert.equal(rounds[0].priceHigh, 400);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const priceLog = logs.find((log) => log.queueAction === 'builder_price_set');
+    assert.deepEqual(priceLog.queueReplyTexts, ['ศราช\n\nช่าง 350-400 ⛔️\n\n🚀🚀🚀🚀🚀']);
   } finally {
     await server.stop();
   }
@@ -4348,7 +4464,7 @@ test('requires available credit before creating a wound and lets the next accept
   }
 });
 
-test('reserves active wound credit across multiple pairs and blocks duplicate accepts', async () => {
+test('reserves active wound credit across multiple pairs', async () => {
   const server = await startServer();
 
   try {
@@ -4429,7 +4545,6 @@ test('reserves active wound credit across multiple pairs and blocks duplicate ac
     );
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
-    assert.equal(logs.some((log) => log.woundRejectedReason === 'already_paired'), true);
     const insufficientLog = logs.find((log) => log.woundRejectedReason === 'insufficient_credit');
     assert.deepEqual(insufficientLog.insufficientCreditUsers, ['UmultiOpener']);
     assert.equal(insufficientLog.requiredCredit, 1);
@@ -4438,7 +4553,7 @@ test('reserves active wound credit across multiple pairs and blocks duplicate ac
   }
 });
 
-test('allows split accepts on the same trade up to the original stake', async () => {
+test('allows split accepts on the same trade until available credit runs out', async () => {
   const server = await startServer();
 
   try {
@@ -4502,7 +4617,73 @@ test('allows split accepts on the same trade up to the original stake', async ()
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     assert.equal(logs.filter((log) => log.woundCreated).length, 2);
-    assert.equal(logs.some((log) => log.woundRejectedReason === 'already_paired'), true);
+    const rejectedLog = logs.find(
+      (log) => log.woundRejectedReason === 'insufficient_credit' && log.accepterUserId === 'UsplitAcceptExtra'
+    );
+    assert.ok(rejectedLog);
+    assert.deepEqual(rejectedLog.insufficientCreditUsers, ['UsplitOpener']);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('allows the same opener trade to pair with multiple accepters when credit remains', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gmulti-accept-same-trade');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UmultiSameOpener', 400, 'm-credit-multi-same-opener', 1710000046000),
+      creditEvent('UmultiSameAcceptOne', 200, 'm-credit-multi-same-accept-one', 1710000046001),
+      creditEvent('UmultiSameAcceptTwo', 200, 'm-credit-multi-same-accept-two', 1710000046002),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmulti-accept-same-trade', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-multi-same-round-open', text: 'เปิด ศราช' },
+        timestamp: 1710000047000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmulti-accept-same-trade', userId: 'UmultiSameOpener' },
+        message: { type: 'text', id: 'm-multi-same-trade', text: 'ชล200' },
+        timestamp: 1710000048000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmulti-accept-same-trade', userId: 'UmultiSameAcceptOne' },
+        message: { type: 'text', id: 'm-multi-same-accept-one', quotedMessageId: 'm-multi-same-trade', text: 'ต' },
+        timestamp: 1710000049000
+      },
+      confirmPairEvent('Gmulti-accept-same-trade', 'UmultiSameOpener', 'm-multi-same-accept-one', 'm-multi-same-confirm-one', 1710000049500),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gmulti-accept-same-trade', userId: 'UmultiSameAcceptTwo' },
+        message: { type: 'text', id: 'm-multi-same-accept-two', quotedMessageId: 'm-multi-same-trade', text: 'ต' },
+        timestamp: 1710000050000
+      },
+      confirmPairEvent('Gmulti-accept-same-trade', 'UmultiSameOpener', 'm-multi-same-accept-two', 'm-multi-same-confirm-two', 1710000050500)
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 2);
+    assert.deepEqual(
+      wounds.map((wound) => [wound.openMessageId, wound.accepterUserId, wound.amount, wound.requiredCredit]).sort(),
+      [
+        ['m-multi-same-trade', 'UmultiSameAcceptOne', '200', 200],
+        ['m-multi-same-trade', 'UmultiSameAcceptTwo', '200', 200]
+      ]
+    );
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.filter((log) => log.woundCreated).length, 2);
+    assert.equal(logs.some((log) => log.woundRejectedReason === 'already_paired'), false);
   } finally {
     await server.stop();
   }

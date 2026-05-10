@@ -983,6 +983,23 @@ function parseSettlementPrice(value) {
   };
 }
 
+function parseBuilderPriceValue(value) {
+  const range = parsePriceRange(value);
+  if (range) return range;
+
+  const single = String(value || '').trim().match(/^(\d+)$/);
+  if (!single) return null;
+
+  const low = Number(single[1]);
+  if (!Number.isFinite(low)) return null;
+
+  return {
+    raw: `${low}-${low + 50}`,
+    low,
+    high: low + 50
+  };
+}
+
 function parseOpenCommand(message) {
   const match = normalizeMessageText(message).match(/^เปิด\s+(.+)$/i);
   if (!match) return null;
@@ -1042,7 +1059,13 @@ function parseBuilderPriceCommand(message) {
   const match = normalizeMessageText(message).match(/^ราคาช่าง\s*(.+)$/i);
   if (!match) return null;
 
-  return parsePriceRange(match[1]);
+  return parseBuilderPriceValue(match[1]);
+}
+
+function parseCancelQueueCommand(message) {
+  const match = normalizeMessageText(message).match(/^ยกเลิก\s*(.+)$/i);
+  const queueName = match ? match[1].trim() : '';
+  return queueName || '';
 }
 
 function parseBehindHouseCommand(message) {
@@ -1070,6 +1093,29 @@ function getLatestRoundForGroup(groupId) {
 
 function getOpenRoundForGroup(groupId) {
   return readRounds().find((round) => round.groupId === groupId && round.status === 'open') || null;
+}
+
+function isRoundAwaitingResult(round) {
+  return round?.status === 'open' || round?.status === 'closed';
+}
+
+function normalizeQueueNameForCompare(value) {
+  return normalizeMessageText(value).replace(/\s+/g, '');
+}
+
+function findCancellableRoundByName(groupId, queueName) {
+  const targetQueueName = normalizeQueueNameForCompare(queueName);
+  if (!targetQueueName) return null;
+
+  return (
+    readRounds().find(
+      (round) =>
+        round.groupId === groupId &&
+        round.status !== 'resulted' &&
+        round.status !== 'cancelled' &&
+        normalizeQueueNameForCompare(round.queueName) === targetQueueName
+    ) || null
+  );
 }
 
 function getLatestQueueListForGroup(groupId) {
@@ -1133,6 +1179,33 @@ function shouldSendRoundReminder(round, reminderMode) {
 
 function buildCloseReply(round) {
   return `❌❌❌❌ ปิด ❌❌❌❌\n\n3 2 1 ไป๊!! 🚀🚀🚀\n\n${round.queueName}\n\n⛔หลังปิดไม่ติดทุกกรณี⛔`;
+}
+
+function buildQueueCancelledReply(round, cancelledCount) {
+  return [
+    `⚠️ ยกเลิกคิว: ${round.queueName}`,
+    'เปลี่ยนคิวจุดกะทันหัน',
+    `ยกเลิกทุกแผลของคิวนี้แล้ว ${cancelledCount} แผล`,
+    'เครดิตที่กันไว้คืนให้ผู้เล่นแล้วครับ'
+  ].join('\n');
+}
+
+function buildQueueCancelNotFoundReply(queueName) {
+  return [
+    `ยังไม่เจอคิวที่กำลังเล่นชื่อ "${queueName}" ครับ`,
+    'ตรวจชื่อคิวให้ตรงกับคิวที่เปิดอยู่ แล้วพิมพ์ ยกเลิกชื่อคิว อีกครั้งครับ'
+  ].join('\n');
+}
+
+function buildQueueCancelledPlayerMessage(round) {
+  return {
+    type: 'text',
+    text: [
+      `⚠️ คิว "${round.queueName}" ถูกยกเลิก`,
+      'แผลของคิวนี้ถูกยกเลิกแล้ว',
+      'เครดิตที่กันไว้กลับไปเป็นยอดถอนได้ครับ'
+    ].join('\n')
+  };
 }
 
 function buildCloseImageMessage(publicBaseUrl) {
@@ -1548,35 +1621,29 @@ function getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId) {
   );
 }
 
-function getUsedTradeStakeAmount(wounds, groupId, roundId, openMessageId) {
-  return roundPoints(
-    getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId)
-      .reduce((sum, wound) => sum + getWoundAmount(wound), 0)
-  );
-}
-
 function withAcceptedStakeAmount(trade, acceptedStakeAmount) {
   const amount = formatStakeAmount(acceptedStakeAmount);
   return amount ? { ...trade, amount } : trade;
 }
 
-function resolveAcceptedTradeForPair(trade, acceptAmount, wounds, groupId, roundId, openMessageId) {
+function resolveAcceptedTradeForPair(trade, acceptAmount, wounds, groupId, roundId, openMessageId, accepterUserId = '') {
   const requestedStake = parsePositiveAmount(acceptAmount);
   const totalStake = getTradeStakeAmount(trade);
   const activeWounds = getActiveWoundsForTrade(wounds, groupId, roundId, openMessageId);
+  const existingPairWound = activeWounds.find((wound) => wound.accepterUserId === accepterUserId);
+
+  if (existingPairWound) {
+    return {
+      reason: 'already_paired',
+      acceptedStake: 0,
+      remainingStake: 0,
+      trade,
+      requiredCredit: getRequiredCreditFromTrade(trade),
+      existingWoundId: existingPairWound.id
+    };
+  }
 
   if (totalStake <= 0) {
-    if (activeWounds.length > 0 && requestedStake <= 0) {
-      return {
-        reason: 'already_paired',
-        acceptedStake: 0,
-        remainingStake: 0,
-        trade,
-        requiredCredit: getRequiredCreditFromTrade(trade),
-        existingWoundId: activeWounds[0].id
-      };
-    }
-
     const acceptedTrade = withAcceptedStakeAmount(trade, requestedStake);
     return {
       reason: '',
@@ -1588,26 +1655,13 @@ function resolveAcceptedTradeForPair(trade, acceptAmount, wounds, groupId, round
     };
   }
 
-  const usedStake = getUsedTradeStakeAmount(wounds, groupId, roundId, openMessageId);
-  const remainingStake = Math.max(0, roundPoints(totalStake - usedStake));
-  if (remainingStake <= 0) {
-    return {
-      reason: 'already_paired',
-      acceptedStake: 0,
-      remainingStake,
-      trade,
-      requiredCredit: getRequiredCreditFromTrade(trade),
-      existingWoundId: activeWounds[0]?.id || ''
-    };
-  }
-
-  const acceptedStake = requestedStake > 0 ? requestedStake : remainingStake;
-  if (acceptedStake > remainingStake) {
+  const acceptedStake = requestedStake > 0 ? requestedStake : totalStake;
+  if (acceptedStake > totalStake) {
     const acceptedTrade = withAcceptedStakeAmount(trade, acceptedStake);
     return {
       reason: 'amount_exceeds_remaining',
       acceptedStake,
-      remainingStake,
+      remainingStake: totalStake,
       trade: acceptedTrade,
       requiredCredit: getRequiredCreditFromTrade(acceptedTrade),
       existingWoundId: ''
@@ -1618,7 +1672,7 @@ function resolveAcceptedTradeForPair(trade, acceptAmount, wounds, groupId, round
   return {
     reason: '',
     acceptedStake,
-    remainingStake,
+    remainingStake: totalStake,
     trade: acceptedTrade,
     requiredCredit: getRequiredCreditFromTrade(acceptedTrade),
     existingWoundId: ''
@@ -3489,7 +3543,8 @@ async function createWoundFromReply(event) {
       wounds,
       source.groupId,
       openRound.id,
-      quotedMessage.id
+      quotedMessage.id,
+      source.userId || ''
     );
 
     if (acceptedTrade.reason) {
@@ -3538,7 +3593,8 @@ async function createWoundFromReply(event) {
     wounds,
     source.groupId,
     openRound.id,
-    tradeMessage.id
+    tradeMessage.id,
+    pairIntent.accepterUserId
   );
 
   if (acceptedTrade.reason) {
@@ -3897,6 +3953,50 @@ function closeWoundsForRound(event, result, round) {
   };
 }
 
+function cancelActiveWoundsForRound(event, round) {
+  const source = event.source || {};
+  const nowTimestamp = event.timestamp || Date.now();
+  const cancelledWounds = [];
+  const wounds = readWounds().map((wound) => {
+    if (wound.status !== 'active' || wound.groupId !== source.groupId || wound.roundId !== round.id) {
+      return wound;
+    }
+
+    const cancelledWound = {
+      ...wound,
+      status: 'cancelled',
+      cancelReason: 'queue_cancelled',
+      cancelledByUserId: source.userId || '',
+      cancelledMessageId: event.message?.id || '',
+      cancelledTimestamp: nowTimestamp,
+      cancelledTime: formatDate(nowTimestamp),
+      closedByUserId: source.userId || '',
+      closedTimestamp: nowTimestamp,
+      closedTime: formatDate(nowTimestamp)
+    };
+    cancelledWounds.push(cancelledWound);
+    return cancelledWound;
+  });
+
+  if (cancelledWounds.length > 0) {
+    writeWounds(wounds);
+  }
+
+  const notificationMessage = buildQueueCancelledPlayerMessage(round);
+  const targetUserIds = [
+    ...new Set(cancelledWounds.flatMap((wound) => [wound.openerUserId, wound.accepterUserId]).filter(Boolean))
+  ];
+
+  return {
+    cancelledCount: cancelledWounds.length,
+    cancelledWounds,
+    privateNotifications: targetUserIds.map((userId) => ({
+      to: userId,
+      messages: [notificationMessage]
+    }))
+  };
+}
+
 function handleQueueAdminCommand(event, publicBaseUrl = '') {
   if (!isGroupTextMessage(event)) return null;
 
@@ -3920,10 +4020,43 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
     };
   }
 
+  const cancelQueueName = parseCancelQueueCommand(messageText);
+  if (cancelQueueName) {
+    const round = findCancellableRoundByName(source.groupId, cancelQueueName);
+    if (!round) {
+      return {
+        type: 'round_cancel_not_found',
+        blockedQueueName: cancelQueueName,
+        replyTexts: [buildQueueCancelNotFoundReply(cancelQueueName)]
+      };
+    }
+
+    const cancelledRound = {
+      ...round,
+      status: 'cancelled',
+      cancelledByUserId: source.userId || '',
+      cancelledMessageId: event.message.id || '',
+      cancelledTimestamp: nowTimestamp,
+      cancelledTime: formatDate(nowTimestamp),
+      pendingResult: null
+    };
+    upsertRound(cancelledRound);
+    const cancelResult = cancelActiveWoundsForRound(event, cancelledRound);
+
+    return {
+      type: 'round_cancelled',
+      round: cancelledRound,
+      cancelledCount: cancelResult.cancelledCount,
+      cancelledWounds: cancelResult.cancelledWounds,
+      privateNotifications: cancelResult.privateNotifications,
+      replyTexts: [buildQueueCancelledReply(cancelledRound, cancelResult.cancelledCount)]
+    };
+  }
+
   const openCommand = parseOpenCommand(messageText) || parseWaitBuilderPriceCommand(messageText);
   if (openCommand) {
     const latestRound = getLatestRoundForGroup(source.groupId);
-    if (latestRound && latestRound.status !== 'resulted') {
+    if (isRoundAwaitingResult(latestRound)) {
       return {
         type: 'round_open_blocked_pending_result',
         round: latestRound,
@@ -3980,7 +4113,7 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
     const latestRound = getLatestRoundForGroup(source.groupId);
     let updatedRound = latestRound || null;
 
-    if (latestRound && latestRound.status !== 'resulted') {
+    if (isRoundAwaitingResult(latestRound)) {
       updatedRound = {
         ...latestRound,
         ...getPriceFields(null),
@@ -4025,7 +4158,7 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
   const builderPrice = parseBuilderPriceCommand(messageText);
   if (builderPrice) {
     const round = getLatestRoundForGroup(source.groupId);
-    if (!round || round.status === 'resulted') return null;
+    if (!isRoundAwaitingResult(round)) return null;
 
     const updatedRound = {
       ...round,
@@ -4049,7 +4182,7 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
   if (!result) return null;
 
   const round = getLatestRoundForGroup(source.groupId);
-  if (!round || round.status === 'open') return null;
+  if (!round || round.status !== 'closed') return null;
 
   const pendingResult = round.pendingResult;
   const isConfirmation =
@@ -4233,6 +4366,10 @@ app.post(
 
             if (typeof queueAction.closedCount === 'number') {
               logEntry.woundsClosed = queueAction.closedCount;
+            }
+
+            if (typeof queueAction.cancelledCount === 'number') {
+              logEntry.cancelledCount = queueAction.cancelledCount;
             }
 
             if (Array.isArray(queueAction.settlements)) {
