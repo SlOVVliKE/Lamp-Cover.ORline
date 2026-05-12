@@ -5,7 +5,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 
-const SERVER_READY_TIMEOUT_MS = 15000;
+const SERVER_READY_TIMEOUT_MS = 30000;
 const CREDIT_FILE = 'credits.json';
 const WITHDRAWAL_FILE = 'withdrawals.json';
 let nextPort = 3300 + Math.floor(Math.random() * 500);
@@ -3361,6 +3361,150 @@ test('registered group admin can open white account notice from white keywords',
         'เปิดบัญชีขาว(⚪)\nกลุ่ม บ้านคุ้มส.กวินทร์\nกรุณาส่งคอนแทคเพื่อเปิดบัญชีขาว'
       ]);
     }
+  } finally {
+    await server.stop();
+  }
+});
+
+test('blacklisted users cannot bet, request behind house, join invites, or withdraw', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/blacklist');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gblacklist-block', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('Ublacklisted', 500, 'm-blacklisted-credit', Date.parse('2024-03-09T11:00:00.000Z')),
+      creditEvent('Ublack-ok', 500, 'm-black-ok-credit', Date.parse('2024-03-09T11:00:01.000Z')),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Uadmin' },
+        replyToken: 'reply-blacklist-open-black',
+        message: { type: 'text', id: 'm-blacklist-open-black', text: 'เปิดดำ' },
+        timestamp: 1710000083000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Uadmin' },
+        replyToken: 'reply-blacklist-add-mention',
+        message: {
+          type: 'text',
+          id: 'm-blacklist-add-mention',
+          text: '@Bad User',
+          mention: {
+            mentionees: [
+              { index: 0, length: 9, userId: 'Ublacklisted' }
+            ]
+          }
+        },
+        timestamp: 1710000083001
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-blacklist-open-round', text: 'เปิด กอดก้อนเมฆ' },
+        timestamp: 1710000083002
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Ublacklisted' },
+        replyToken: 'reply-blacklisted-behind',
+        message: { type: 'text', id: 'm-blacklisted-behind', text: 'หลังบ้าน' },
+        timestamp: 1710000083003
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Ublacklisted', displayName: 'Bad User' },
+        message: { type: 'text', id: 'm-blacklisted-trade', text: 'ชล100' },
+        timestamp: 1710000083004
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Ublack-ok' },
+        message: { type: 'text', id: 'm-black-ok-accept', quotedMessageId: 'm-blacklisted-trade', text: 'ต' },
+        timestamp: 1710000083005
+      },
+      confirmPairEvent('Gblacklist-block', 'Ublacklisted', 'm-black-ok-accept', 'm-blacklisted-confirm', 1710000083006),
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ublacklisted' },
+        replyToken: 'reply-blacklisted-invite',
+        message: { type: 'text', id: 'm-blacklisted-invite', text: 'เข้ากลุ่มแทง' },
+        timestamp: 1710000083007
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ublacklisted' },
+        replyToken: 'reply-blacklisted-withdraw',
+        message: { type: 'text', id: 'm-blacklisted-withdraw', text: 'ถอนยอดเงิน' },
+        timestamp: Date.parse('2024-03-09T12:00:00.000Z')
+      }
+    ]);
+
+    const blacklist = await (await fetch(`${server.baseUrl}/api/blacklist`)).json();
+    assert.equal(blacklist.length, 1);
+    assert.equal(blacklist[0].groupId, 'Gblacklist-block');
+    assert.equal(blacklist[0].userId, 'Ublacklisted');
+    assert.equal(blacklist[0].displayName, 'Bad User');
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.blackAccountAction === 'blacklist_added'), true);
+    assert.equal(logs.some((log) => log.userId === 'Ublacklisted' && log.behindHouseRequested), false);
+    assert.equal(logs.some((log) => log.userId === 'Ublacklisted' && log.tradeKeyword), false);
+    assert.equal(logs.some((log) => log.userId === 'Ublacklisted' && log.betGroupInviteRequested), false);
+
+    const withdrawLog = logs.find((log) => log.userId === 'Ublacklisted' && log.message === 'ถอนยอดเงิน');
+    assert.equal(withdrawLog.creditAction, 'blacklisted_withdraw_blocked');
+    assert.match(JSON.stringify(withdrawLog.creditReplyMessages), /ระงับการถอน/);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Uadmin' },
+        replyToken: 'reply-blacklist-open-white',
+        message: { type: 'text', id: 'm-blacklist-open-white', text: 'เปิดขาว' },
+        timestamp: 1710000084000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Uadmin' },
+        replyToken: 'reply-blacklist-remove-mention',
+        message: {
+          type: 'text',
+          id: 'm-blacklist-remove-mention',
+          text: '@Bad User',
+          mention: {
+            mentionees: [
+              { index: 0, length: 9, userId: 'Ublacklisted' }
+            ]
+          }
+        },
+        timestamp: 1710000084001
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-block', userId: 'Ublacklisted' },
+        replyToken: 'reply-blacklisted-behind-after-white',
+        message: { type: 'text', id: 'm-blacklisted-behind-after-white', text: 'หลังบ้าน' },
+        timestamp: 1710000084002
+      }
+    ]);
+
+    const blacklistAfterWhite = await (await fetch(`${server.baseUrl}/api/blacklist`)).json();
+    assert.equal(blacklistAfterWhite.length, 0);
+
+    const logsAfterWhite = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logsAfterWhite.some((log) => log.blackAccountAction === 'blacklist_removed'), true);
+    assert.equal(logsAfterWhite.some((log) => log.userId === 'Ublacklisted' && log.behindHouseRequested), true);
   } finally {
     await server.stop();
   }

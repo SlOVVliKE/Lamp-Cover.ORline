@@ -59,6 +59,8 @@ const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
 const BROADCAST_FILE = path.join(__dirname, 'broadcasts.json');
 const CREDIT_FILE = path.join(__dirname, 'credits.json');
 const WITHDRAWAL_FILE = path.join(__dirname, 'withdrawals.json');
+const BLACKLIST_FILE = path.join(__dirname, 'blacklist.json');
+const BLACKLIST_MODE_FILE = path.join(__dirname, 'blacklistModes.json');
 const CLOSE_IMAGE_FILE = path.join(__dirname, 'ปิด.jpg');
 const CLOSE_IMAGE_ROUTE = '/assets/close.jpg';
 const MAX_LOGS = 1000;
@@ -70,7 +72,10 @@ const MAX_QUEUE_LISTS = 200;
 const MAX_BROADCAST_SCHEDULES = 200;
 const MAX_CREDITS = 5000;
 const MAX_WITHDRAWALS = 2000;
+const MAX_BLACKLIST = 5000;
+const MAX_BLACKLIST_MODES = 500;
 const MAX_CREDIT_TRANSACTIONS = 200;
+const BLACKLIST_MODE_TTL_MS = 10 * 60 * 1000;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
 const WITHDRAWAL_OPEN_HOUR = 18;
@@ -92,7 +97,9 @@ const MONGO_COLLECTION_BY_FILE = new Map([
   [QUEUE_LIST_FILE, 'lamp_queue_lists'],
   [BROADCAST_FILE, 'lamp_broadcast_settings'],
   [CREDIT_FILE, 'lamp_credits'],
-  [WITHDRAWAL_FILE, 'lamp_withdrawals']
+  [WITHDRAWAL_FILE, 'lamp_withdrawals'],
+  [BLACKLIST_FILE, 'lamp_blacklist'],
+  [BLACKLIST_MODE_FILE, 'lamp_blacklist_modes']
 ]);
 const MONGO_SLIP_COLLECTION = 'lamp_slips';
 let mongoClient = null;
@@ -365,6 +372,22 @@ function writeWithdrawals(withdrawals) {
   writeJsonArray(WITHDRAWAL_FILE, sortWithdrawals(withdrawals).filter(isPendingWithdrawal), MAX_WITHDRAWALS);
 }
 
+function readBlacklist() {
+  return sortBlacklist(readJsonArray(BLACKLIST_FILE, 'blacklist.json'));
+}
+
+function writeBlacklist(entries) {
+  writeJsonArray(BLACKLIST_FILE, sortBlacklist(entries), MAX_BLACKLIST);
+}
+
+function readBlacklistModes() {
+  return sortBlacklistModes(readJsonArray(BLACKLIST_MODE_FILE, 'blacklistModes.json'));
+}
+
+function writeBlacklistModes(modes) {
+  writeJsonArray(BLACKLIST_MODE_FILE, sortBlacklistModes(modes), MAX_BLACKLIST_MODES);
+}
+
 function pruneProcessedWithdrawals() {
   const withdrawals = readAllWithdrawals();
   const pendingWithdrawals = withdrawals.filter(isPendingWithdrawal);
@@ -612,6 +635,48 @@ function sortWithdrawals(withdrawals) {
     .map(normalizeWithdrawalRow)
     .filter((withdrawal) => withdrawal.id && withdrawal.userId)
     .sort((withdrawalA, withdrawalB) => (withdrawalB.createdTimestamp || 0) - (withdrawalA.createdTimestamp || 0));
+}
+
+function normalizeBlacklistEntry(entry) {
+  const groupId = String(entry?.groupId || '').trim();
+  const userId = String(entry?.userId || '').trim();
+  const timestamp = Number(entry?.timestamp || entry?.addedTimestamp || 0) || 0;
+
+  return {
+    id: String(entry?.id || `${groupId}:${userId}`).trim(),
+    groupId,
+    userId,
+    displayName: normalizeDisplayName(entry?.displayName) || String(entry?.displayName || '').trim(),
+    reason: String(entry?.reason || '').trim(),
+    addedByUserId: String(entry?.addedByUserId || '').trim(),
+    addedTimestamp: timestamp,
+    addedTime: String(entry?.addedTime || entry?.time || '').trim(),
+    messageId: String(entry?.messageId || '').trim()
+  };
+}
+
+function sortBlacklist(entries) {
+  return [...entries]
+    .map(normalizeBlacklistEntry)
+    .filter((entry) => entry.groupId && entry.userId)
+    .sort((entryA, entryB) => (entryB.addedTimestamp || 0) - (entryA.addedTimestamp || 0));
+}
+
+function normalizeBlacklistMode(mode) {
+  return {
+    groupId: String(mode?.groupId || '').trim(),
+    mode: mode?.mode === 'white' ? 'white' : 'black',
+    openedByUserId: String(mode?.openedByUserId || '').trim(),
+    openedTimestamp: Number(mode?.openedTimestamp || 0) || 0,
+    expiresAt: Number(mode?.expiresAt || 0) || 0
+  };
+}
+
+function sortBlacklistModes(modes) {
+  return [...modes]
+    .map(normalizeBlacklistMode)
+    .filter((mode) => mode.groupId && mode.openedByUserId && mode.expiresAt > Date.now())
+    .sort((modeA, modeB) => (modeB.openedTimestamp || 0) - (modeA.openedTimestamp || 0));
 }
 
 function getPendingWithdrawalForUser(userId) {
@@ -1459,6 +1524,211 @@ function parseOpenAccountListCommand(message) {
     return 'white';
   }
   return '';
+}
+
+function parseBlacklistTargetCommand(message) {
+  const text = normalizeMessageText(message);
+  if (!text) return null;
+
+  const compact = text.replace(/\s+/g, '');
+  const removePrefixes = ['ลบบัญชีดำ', 'ปลดบัญชีดำ', 'บัญชีขาว', 'บชขาว', 'whitelist', 'unblock'];
+  const addPrefixes = ['เพิ่มบัญชีดำ', 'บัญชีดำ', 'บชดำ', 'blacklist', 'block'];
+
+  for (const prefix of removePrefixes) {
+    if (compact.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return {
+        mode: 'white',
+        targetText: text.slice(text.toLowerCase().indexOf(prefix.toLowerCase()) + prefix.length).replace(/^[:>\-\s]+/, '').trim()
+      };
+    }
+  }
+
+  for (const prefix of addPrefixes) {
+    if (compact.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return {
+        mode: 'black',
+        targetText: text.slice(text.toLowerCase().indexOf(prefix.toLowerCase()) + prefix.length).replace(/^[:>\-\s]+/, '').trim()
+      };
+    }
+  }
+
+  return null;
+}
+
+function getMessageMentionTargets(event) {
+  const text = getMessageText(event);
+  const mentionees = Array.isArray(event?.message?.mention?.mentionees)
+    ? event.message.mention.mentionees
+    : [];
+
+  return mentionees
+    .filter((mention) => mention?.userId)
+    .map((mention) => {
+      const index = Math.max(0, Number(mention.index) || 0);
+      const length = Math.max(0, Number(mention.length) || 0);
+      const mentionedText = length > 0 ? text.slice(index, index + length) : '';
+      return {
+        userId: String(mention.userId || '').trim(),
+        displayName: normalizeDisplayName(mentionedText.replace(/^@+/, '').trim()) || findKnownDisplayNameByUserId(mention.userId)
+      };
+    })
+    .filter((target) => target.userId);
+}
+
+function findKnownGroupMemberByDisplayName(groupId, displayName) {
+  const targetName = normalizeDisplayName(displayName).toLowerCase();
+  if (!groupId || !targetName) return null;
+
+  const message = readMessages()
+    .filter((row) => row.groupId === groupId && row.userId && normalizeDisplayName(row.displayName).toLowerCase() === targetName)
+    .sort((rowA, rowB) => (Number(rowB.timestamp) || 0) - (Number(rowA.timestamp) || 0))[0];
+
+  if (!message) return null;
+  return {
+    userId: message.userId,
+    displayName: normalizeDisplayName(message.displayName)
+  };
+}
+
+function getLineUserIdsFromText(text) {
+  return Array.from(new Set(String(text || '').match(/\bU[0-9A-Za-z_-]{5,}\b/g) || []));
+}
+
+function normalizeBlacklistTargetText(message, explicitTargetText = '') {
+  const text = explicitTargetText || normalizeMessageText(message);
+  return String(text || '')
+    .replace(/^[@>\-:\s]+/, '')
+    .replace(/^ลบบัญชีดำ\s*/i, '')
+    .replace(/^ปลดบัญชีดำ\s*/i, '')
+    .replace(/^บัญชีขาว\s*/i, '')
+    .replace(/^บชขาว\s*/i, '')
+    .replace(/^เพิ่มบัญชีดำ\s*/i, '')
+    .replace(/^บัญชีดำ\s*/i, '')
+    .replace(/^บชดำ\s*/i, '')
+    .replace(/^blacklist\s*/i, '')
+    .replace(/^block\s*/i, '')
+    .replace(/^whitelist\s*/i, '')
+    .replace(/^unblock\s*/i, '')
+    .replace(/^[@>\-:\s]+/, '')
+    .trim();
+}
+
+async function resolveBlacklistTargets(event, targetText = '') {
+  const source = event.source || {};
+  const targetsByUserId = new Map();
+
+  for (const target of getMessageMentionTargets(event)) {
+    targetsByUserId.set(target.userId, target);
+  }
+
+  const cleanedTargetText = normalizeBlacklistTargetText(getMessageText(event), targetText);
+  for (const userId of getLineUserIdsFromText(cleanedTargetText)) {
+    if (!targetsByUserId.has(userId)) {
+      const displayName = findKnownDisplayNameByUserId(userId) ||
+        normalizeDisplayName((await getLineGroupMemberProfile(source.groupId, userId).catch(() => null))?.displayName);
+      targetsByUserId.set(userId, { userId, displayName });
+    }
+  }
+
+  if (targetsByUserId.size === 0 && cleanedTargetText) {
+    const knownMember = findKnownGroupMemberByDisplayName(source.groupId, cleanedTargetText.replace(/^@+/, ''));
+    if (knownMember) {
+      targetsByUserId.set(knownMember.userId, knownMember);
+    }
+  }
+
+  return Array.from(targetsByUserId.values()).map((target) => ({
+    userId: String(target.userId || '').trim(),
+    displayName: normalizeDisplayName(target.displayName) || findKnownDisplayNameByUserId(target.userId) || String(target.userId || '').trim()
+  })).filter((target) => target.userId);
+}
+
+function getActiveBlacklistMode(groupId) {
+  const nowTimestamp = Date.now();
+  const activeModes = readBlacklistModes().filter((mode) => mode.groupId === groupId && mode.expiresAt > nowTimestamp);
+  return activeModes[0] || null;
+}
+
+function setBlacklistMode(groupId, mode, openedByUserId, openedTimestamp = Date.now()) {
+  const entry = {
+    groupId,
+    mode,
+    openedByUserId,
+    openedTimestamp,
+    expiresAt: openedTimestamp + BLACKLIST_MODE_TTL_MS
+  };
+  const modes = readBlacklistModes().filter((row) => row.groupId !== groupId);
+  writeBlacklistModes([entry, ...modes]);
+  return entry;
+}
+
+function clearBlacklistMode(groupId) {
+  writeBlacklistModes(readBlacklistModes().filter((row) => row.groupId !== groupId));
+}
+
+function isUserBlacklistedForGroup(userId, groupId) {
+  if (!userId || !groupId) return false;
+  return readBlacklist().some((entry) => entry.userId === userId && entry.groupId === groupId);
+}
+
+function isUserBlacklistedAnywhere(userId) {
+  if (!userId) return false;
+  return readBlacklist().some((entry) => entry.userId === userId);
+}
+
+function upsertBlacklistEntries(groupId, targets, adminUserId, event) {
+  const nowTimestamp = event?.timestamp || Date.now();
+  const existing = readBlacklist();
+  const nextEntries = [...existing];
+
+  for (const target of targets) {
+    const currentIndex = nextEntries.findIndex((entry) => entry.groupId === groupId && entry.userId === target.userId);
+    const entry = normalizeBlacklistEntry({
+      ...(currentIndex >= 0 ? nextEntries[currentIndex] : {}),
+      id: `${groupId}:${target.userId}`,
+      groupId,
+      userId: target.userId,
+      displayName: normalizeDisplayName(target.displayName) || target.userId,
+      reason: 'black_account',
+      addedByUserId: adminUserId,
+      addedTimestamp: nowTimestamp,
+      addedTime: formatDate(nowTimestamp),
+      messageId: event?.message?.id || ''
+    });
+
+    if (currentIndex >= 0) {
+      nextEntries[currentIndex] = entry;
+    } else {
+      nextEntries.push(entry);
+    }
+  }
+
+  writeBlacklist(nextEntries);
+}
+
+function removeBlacklistEntries(groupId, targets) {
+  const targetIds = new Set(targets.map((target) => target.userId));
+  writeBlacklist(readBlacklist().filter((entry) => !(entry.groupId === groupId && targetIds.has(entry.userId))));
+}
+
+function buildBlacklistTargetReply(mode, groupName, targets) {
+  const isRemove = mode === 'white';
+  const names = targets.map((target, index) => `${index + 1}. ${target.displayName || target.userId}`).join('\n');
+  const title = isRemove ? '✅ เปิดบัญชีขาวสำเร็จ' : '✅ เพิ่มบัญชีดำสำเร็จ';
+  const note = isRemove
+    ? 'ผู้ใช้นี้กลับมาใช้งานในกลุ่มนี้ได้แล้วครับ'
+    : 'ระบบจะไม่รับแทง ไม่ตอบหลังบ้าน และไม่ให้ถอนจากบัญชีนี้ครับ';
+
+  return `${title}\nกลุ่ม ${groupName || '-'}\n${names}\n\n${note}`;
+}
+
+function buildBlacklistTargetNotFoundReply(mode) {
+  const actionText = mode === 'white' ? 'ปลดบัญชีดำ' : 'เพิ่มบัญชีดำ';
+  return `ยัง${actionText}ไม่ได้ครับ\nกรุณา @ชื่อผู้ใช้ หรือส่ง userId ของ LINE ให้ชัดเจน`;
+}
+
+function buildBlacklistedWithdrawBlockedText() {
+  return 'บัญชีนี้ถูกระงับการถอน กรุณาติดต่อแอดมินครับ';
 }
 
 function roundPoints(value) {
@@ -2586,7 +2856,13 @@ function handleCreditEvent(event, publicBaseUrl = '') {
     return null;
   }
 
+  const userBlacklisted = isUserBlacklistedAnywhere(source.userId);
+
   if (parsePaymentAccountKeyword(messageText)) {
+    if (userBlacklisted) {
+      return null;
+    }
+
     return {
       type: 'payment_account',
       replyMessages: [
@@ -2623,6 +2899,17 @@ function handleCreditEvent(event, publicBaseUrl = '') {
   }
 
   if (keyword === 'withdraw') {
+    if (userBlacklisted) {
+      return {
+        type: 'blacklisted_withdraw_blocked',
+        creditBalance: snapshot.credit.balance,
+        activeWoundAmount: snapshot.activeWoundAmount,
+        withdrawableBalance: snapshot.withdrawableBalance,
+        activeWoundCount: snapshot.activeWounds.length,
+        replyMessages: [buildBlacklistedWithdrawBlockedText()]
+      };
+    }
+
     if (!isWithdrawalRequestOpen(event.timestamp || Date.now())) {
       return {
         type: 'withdraw_closed',
@@ -3453,13 +3740,8 @@ function buildOpenWhiteAccountReply(groupName) {
   ].join('\n');
 }
 
-function handleBlackAccountCommand(event) {
+async function handleBlackAccountCommand(event) {
   if (!isGroupTextMessage(event)) {
-    return null;
-  }
-
-  const accountListMode = parseOpenAccountListCommand(getMessageText(event));
-  if (!accountListMode) {
     return null;
   }
 
@@ -3468,16 +3750,52 @@ function handleBlackAccountCommand(event) {
     return null;
   }
 
+  const messageText = getMessageText(event);
+  const accountListMode = parseOpenAccountListCommand(messageText);
   const groupName = getBoundGroupName(source.groupId);
 
+  if (accountListMode) {
+    setBlacklistMode(source.groupId, accountListMode, source.userId);
+    return {
+      type: accountListMode === 'white' ? 'open_white_account' : 'open_black_account_removal',
+      groupName,
+      replyTexts: [
+        accountListMode === 'white'
+          ? buildOpenWhiteAccountReply(groupName)
+          : buildOpenBlackAccountReply(groupName)
+      ]
+    };
+  }
+
+  const explicitTargetCommand = parseBlacklistTargetCommand(messageText);
+  const activeMode = getActiveBlacklistMode(source.groupId);
+  const mode = explicitTargetCommand?.mode || activeMode?.mode || '';
+  if (!mode) {
+    return null;
+  }
+
+  const targets = await resolveBlacklistTargets(event, explicitTargetCommand?.targetText || '');
+  if (targets.length === 0) {
+    return {
+      type: mode === 'white' ? 'blacklist_remove_target_not_found' : 'blacklist_add_target_not_found',
+      groupName,
+      replyTexts: [buildBlacklistTargetNotFoundReply(mode)]
+    };
+  }
+
+  if (mode === 'white') {
+    removeBlacklistEntries(source.groupId, targets);
+  } else {
+    upsertBlacklistEntries(source.groupId, targets, source.userId, event);
+  }
+
+  clearBlacklistMode(source.groupId);
+
   return {
-    type: accountListMode === 'white' ? 'open_white_account' : 'open_black_account_removal',
+    type: mode === 'white' ? 'blacklist_removed' : 'blacklist_added',
     groupName,
-    replyTexts: [
-      accountListMode === 'white'
-        ? buildOpenWhiteAccountReply(groupName)
-        : buildOpenBlackAccountReply(groupName)
-    ]
+    targets,
+    replyTexts: [buildBlacklistTargetReply(mode, groupName, targets)]
   };
 }
 
@@ -3490,6 +3808,10 @@ function handleBehindHouseCommand(event) {
   const behindHouseRequested = parseBehindHouseCommand(messageText);
   const paymentAccountRequested = parsePaymentAccountKeyword(messageText);
   if (!behindHouseRequested && !paymentAccountRequested) {
+    return null;
+  }
+
+  if (isUserBlacklistedForGroup(event.source?.userId, event.source?.groupId)) {
     return null;
   }
 
@@ -3518,6 +3840,10 @@ function handleBetGroupInviteEvent(event) {
     return null;
   }
 
+  if (isUserBlacklistedAnywhere(event.source?.userId)) {
+    return null;
+  }
+
   return {
     type: 'bet_group_invite',
     replyTexts: [getBetGroupInviteText()]
@@ -3530,6 +3856,10 @@ function trackGroupMessage(event) {
   }
 
   const source = event.source || {};
+  if (isUserBlacklistedForGroup(source.userId, source.groupId)) {
+    return null;
+  }
+
   const openRound = getOpenRoundForGroup(source.groupId);
   const messageText = getMessageText(event);
   const quotedMessageId = event.message.quotedMessageId || '';
@@ -3714,6 +4044,16 @@ async function createWoundFromReply(event) {
   const openRound = getOpenRoundForGroup(source.groupId);
   if (!openRound) return null;
 
+  if (isUserBlacklistedForGroup(source.userId, source.groupId)) {
+    return {
+      type: 'wound_rejected',
+      reason: 'blacklisted_user',
+      openerUserId: source.userId || '',
+      accepterUserId: source.userId || '',
+      insufficientCreditUsers: []
+    };
+  }
+
   const acceptIntent = parseAcceptIntent(getMessageText(event));
   const acceptKeyword = acceptIntent?.keyword || null;
   const quotedMessage = findTrackedMessage(event.message.quotedMessageId);
@@ -3727,6 +4067,17 @@ async function createWoundFromReply(event) {
 
   if (quotedMessage.trade) {
     if (!quotedMessage.userId || quotedMessage.userId === source.userId) return null;
+    if (isUserBlacklistedForGroup(quotedMessage.userId, source.groupId)) {
+      return {
+        type: 'wound_rejected',
+        reason: 'blacklisted_user',
+        openMessageId: quotedMessage.id,
+        openerUserId: quotedMessage.userId,
+        accepterUserId: source.userId || '',
+        insufficientCreditUsers: []
+      };
+    }
+
     const acceptFallbackNoBuilder = isNoBuilderFallbackMarker(acceptKeyword);
     const acceptedTrade = resolveAcceptedTradeForPair(
       withNoBuilderFallback(quotedMessage.trade, acceptFallbackNoBuilder),
@@ -3772,6 +4123,20 @@ async function createWoundFromReply(event) {
   const tradeMessage = findTrackedMessage(pairIntent.openMessageId);
   if (!tradeMessage?.trade) return null;
   if (tradeMessage.groupId !== source.groupId || tradeMessage.roundId !== openRound.id) return null;
+  if (
+    isUserBlacklistedForGroup(tradeMessage.userId, source.groupId) ||
+    isUserBlacklistedForGroup(pairIntent.accepterUserId, source.groupId)
+  ) {
+    return {
+      type: 'wound_rejected',
+      reason: 'blacklisted_user',
+      openMessageId: tradeMessage.id,
+      openerUserId: tradeMessage.userId,
+      accepterUserId: pairIntent.accepterUserId,
+      insufficientCreditUsers: []
+    };
+  }
+
   const fallbackNoBuilder = Boolean(
     tradeMessage.trade.fallbackNoBuilder ||
       pairIntent.fallbackNoBuilder ||
@@ -4446,6 +4811,8 @@ ensureJsonFile(ROUND_FILE);
 ensureJsonFile(QUEUE_LIST_FILE);
 ensureJsonFile(CREDIT_FILE);
 ensureJsonFile(WITHDRAWAL_FILE);
+ensureJsonFile(BLACKLIST_FILE);
+ensureJsonFile(BLACKLIST_MODE_FILE);
 
 app.get(CLOSE_IMAGE_ROUTE, (req, res) => {
   if (!fs.existsSync(CLOSE_IMAGE_FILE)) {
@@ -4483,7 +4850,7 @@ app.post(
           const queueLookupAction = handleQueueLookupCommand(event);
           const queueAction = handleQueueAdminCommand(event, publicBaseUrl);
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
-          const blackAccountAction = handleBlackAccountCommand(event);
+          const blackAccountAction = await handleBlackAccountCommand(event);
           const behindHouseAction = handleBehindHouseCommand(event);
           const betGroupInviteAction = handleBetGroupInviteEvent(event);
           const trackedMessage = trackGroupMessage(event);
@@ -4603,6 +4970,12 @@ app.post(
           if (blackAccountAction) {
             logEntry.blackAccountAction = blackAccountAction.type;
             logEntry.blackAccountGroupName = blackAccountAction.groupName || '';
+            logEntry.blackAccountTargetUserIds = Array.isArray(blackAccountAction.targets)
+              ? blackAccountAction.targets.map((target) => target.userId)
+              : [];
+            logEntry.blackAccountTargetNames = Array.isArray(blackAccountAction.targets)
+              ? blackAccountAction.targets.map((target) => target.displayName || target.userId)
+              : [];
             logEntry.blackAccountReplyTexts = Array.isArray(blackAccountAction.replyTexts)
               ? blackAccountAction.replyTexts
               : [];
@@ -6124,6 +6497,10 @@ app.get('/withdraw/request', async (req, res) => {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
   }
 
+  if (isUserBlacklistedAnywhere(tokenData.userId)) {
+    return res.status(403).send(buildBlacklistedWithdrawBlockedText());
+  }
+
   const requestTokenHash = getWithdrawalRequestTokenHash(token);
   const existingWithdrawals = readWithdrawals();
   if (existingWithdrawals.some((withdrawal) => safeStringEqual(withdrawal.requestTokenHash, requestTokenHash))) {
@@ -6251,6 +6628,10 @@ app.post('/withdraw/request', async (req, res) => {
   const tokenData = parseWithdrawalRequestToken(token);
   if (!tokenData) {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  if (isUserBlacklistedAnywhere(tokenData.userId)) {
+    return res.status(403).send(buildBlacklistedWithdrawBlockedText());
   }
 
   const requestTokenHash = getWithdrawalRequestTokenHash(token);
@@ -7071,6 +7452,16 @@ app.get('/api/queue-lists', (req, res) => {
 
 app.delete('/api/queue-lists', (req, res) => {
   writeQueueLists([]);
+  res.json({ success: true });
+});
+
+app.get('/api/blacklist', (req, res) => {
+  res.json(readBlacklist());
+});
+
+app.delete('/api/blacklist', (req, res) => {
+  writeBlacklist([]);
+  writeBlacklistModes([]);
   res.json({ success: true });
 });
 
