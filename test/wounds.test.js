@@ -415,6 +415,133 @@ test('pair success cards include a cancel request button for active wounds', asy
   }
 });
 
+test('pushes a pair success text before the private pair success card', async () => {
+  const pushRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const body = await readRequestJson(req);
+    if (req.url === '/v2/bot/message/push') {
+      pushRequests.push(body);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gpair-push-text');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UpairPushOpen', 500, 'm-credit-pair-push-open', 1710000105100),
+      creditEvent('UpairPushAccept', 500, 'm-credit-pair-push-accept', 1710000105101),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-text', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-pair-push-round-open', text: 'เปิด ฟ้าสีทอง' },
+        timestamp: 1710000105200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-text', userId: 'UpairPushOpen', displayName: 'ป๊อด ภาณุเดช' },
+        message: { type: 'text', id: 'm-pair-push-trade', text: 'ชล20' },
+        timestamp: 1710000105300
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-text', userId: 'UpairPushAccept', displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-pair-push-accept', quotedMessageId: 'm-pair-push-trade', text: 'ต' },
+        timestamp: 1710000105400
+      },
+      confirmPairEvent('Gpair-push-text', 'UpairPushOpen', 'm-pair-push-accept', 'm-pair-push-confirm', 1710000105500)
+    ]);
+
+    assert.equal(pushRequests.length, 2);
+
+    for (const request of pushRequests) {
+      assert.equal(request.messages[0].type, 'text');
+      assert.match(request.messages[0].text, /จับคู่สำเร็จ/);
+      assert.match(request.messages[0].text, /20\.00/);
+      assert.equal(request.messages[1].type, 'flex');
+      assert.match(request.messages[1].altText, /จับคู่สำเร็จ/);
+    }
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
+test('retries the pair success text separately when the private flex push fails', async () => {
+  const pushRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const body = await readRequestJson(req);
+    if (req.url === '/v2/bot/message/push') {
+      pushRequests.push(body);
+    }
+
+    const hasFlex = (body.messages || []).some((message) => message.type === 'flex');
+    res.writeHead(hasFlex ? 400 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(hasFlex ? { message: 'invalid flex' } : { success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gpair-push-retry');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UpairRetryOpen', 500, 'm-credit-pair-retry-open', 1710000105600),
+      creditEvent('UpairRetryAccept', 500, 'm-credit-pair-retry-accept', 1710000105601),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-retry', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-pair-retry-round-open', text: 'เปิด ฟ้าสีทอง' },
+        timestamp: 1710000105700
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-retry', userId: 'UpairRetryOpen', displayName: 'ป๊อด ภาณุเดช' },
+        message: { type: 'text', id: 'm-pair-retry-trade', text: 'ชล20' },
+        timestamp: 1710000105800
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gpair-push-retry', userId: 'UpairRetryAccept', displayName: 'Bank Thirakan' },
+        message: { type: 'text', id: 'm-pair-retry-accept', quotedMessageId: 'm-pair-retry-trade', text: 'ต' },
+        timestamp: 1710000105900
+      },
+      confirmPairEvent('Gpair-push-retry', 'UpairRetryOpen', 'm-pair-retry-accept', 'm-pair-retry-confirm', 1710000106000)
+    ]);
+
+    const textRetryRequests = pushRequests.filter(
+      (request) => request.messages?.length === 1 && request.messages[0].type === 'text'
+    );
+
+    assert.equal(textRetryRequests.length, 2);
+    assert.equal(textRetryRequests[0].messages[0].text.includes('จับคู่สำเร็จ'), true);
+    assert.equal(textRetryRequests[1].messages[0].text.includes('จับคู่สำเร็จ'), true);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('cancel request postback asks the paired opponent to approve or reject', async () => {
   const server = await startServer();
 

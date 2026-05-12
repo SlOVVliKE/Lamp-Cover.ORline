@@ -2652,6 +2652,19 @@ function buildPairSuccessFlex(wound, viewerUserId) {
   };
 }
 
+function buildPairSuccessText(wound, viewerUserId) {
+  const amount = formatPoints(wound.requiredCredit || getWoundAmount(wound));
+  const opponentName = getWoundOpponentName(wound, viewerUserId) || '-';
+
+  return [
+    '✅ จับคู่สำเร็จ',
+    `รายการ: ${wound.roundName || '-'}`,
+    `ยอด: ${amount}`,
+    `คู่: ${opponentName}`,
+    'พิมพ์ "แผลที่กำลังติด" เพื่อดูแผลที่ติดอยู่'
+  ].join('\n');
+}
+
 function getWoundParticipantName(wound, userId) {
   if (userId === wound.openerUserId) return normalizeDisplayName(wound.openerDisplayName) || 'ผู้เปิด';
   if (userId === wound.accepterUserId) return normalizeDisplayName(wound.accepterDisplayName) || 'ผู้รับ';
@@ -3068,11 +3081,12 @@ async function replyToLine(replyToken, messages) {
   return response;
 }
 
-async function pushToLine(to, messages) {
+async function pushToLine(to, messages, options = {}) {
   if (!LINE_CHANNEL_ACCESS_TOKEN || !to || messages.length === 0) {
     return null;
   }
 
+  const lineMessages = messages.slice(0, 5).map(toLineMessage);
   const response = await fetch(`${LINE_MESSAGING_API_URL}/v2/bot/message/push`, {
     method: 'POST',
     headers: {
@@ -3081,13 +3095,18 @@ async function pushToLine(to, messages) {
     },
     body: JSON.stringify({
       to,
-      messages: messages.slice(0, 5).map(toLineMessage)
+      messages: lineMessages
     })
   });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
     console.error(`LINE push failed: ${response.status} ${errorText}`);
+    if (options.splitRetry !== false && lineMessages.length > 1) {
+      for (const message of lineMessages) {
+        await pushToLine(to, [message], { splitRetry: false });
+      }
+    }
   }
 
   return response;
@@ -4248,11 +4267,17 @@ async function createWoundFromReply(event) {
     privateNotifications: [
       {
         to: woundEntry.openerUserId,
-        messages: [buildPairSuccessFlex(woundEntry, woundEntry.openerUserId)]
+        messages: [
+          buildPairSuccessText(woundEntry, woundEntry.openerUserId),
+          buildPairSuccessFlex(woundEntry, woundEntry.openerUserId)
+        ]
       },
       {
         to: woundEntry.accepterUserId,
-        messages: [buildPairSuccessFlex(woundEntry, woundEntry.accepterUserId)]
+        messages: [
+          buildPairSuccessText(woundEntry, woundEntry.accepterUserId),
+          buildPairSuccessFlex(woundEntry, woundEntry.accepterUserId)
+        ]
       }
     ].filter((notification) => notification.to)
   };
