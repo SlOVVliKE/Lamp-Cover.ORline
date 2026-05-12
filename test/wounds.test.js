@@ -3520,6 +3520,143 @@ test('replies with betting group invite links from a private rich menu postback'
   }
 });
 
+test('admin broadcast page updates the betting group invite message', async () => {
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: '',
+    BET_GROUP_INVITE_TEXT: 'ข้อความเดิม'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
+
+    const unauthPage = await fetch(`${server.baseUrl}/broadcasts`, { redirect: 'manual' });
+    assert.equal(unauthPage.status, 302);
+    assert.match(unauthPage.headers.get('location') || '', /\/credits\/login/);
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = login.headers.get('set-cookie') || '';
+
+    const page = await fetch(`${server.baseUrl}/broadcasts`, { headers: { cookie } });
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(html, /ตั้งค่าข้อความ/);
+    assert.match(html, /name="inviteText"/);
+    assert.match(html, /name="scheduledTime"/);
+    assert.match(html, /href="\/credits"/);
+
+    const inviteText = [
+      'เปิดฤดูกาลบั้งไฟแสน',
+      'กลุ่ม 1 บ้านคุ้ม',
+      'https://line.me/ti/g/new-group'
+    ].join('\n');
+    const saveInvite = await fetch(`${server.baseUrl}/broadcasts/invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        cookie
+      },
+      body: new URLSearchParams({ inviteText }),
+      redirect: 'manual'
+    });
+    assert.equal(saveInvite.status, 302);
+    assert.match(saveInvite.headers.get('location') || '', /\/broadcasts/);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'UbroadcastInvite' },
+        replyToken: 'reply-broadcast-invite',
+        message: { type: 'text', id: 'm-broadcast-invite', text: 'เข้ากลุ่มแทง' },
+        timestamp: 1710000082600
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
+    assert.ok(inviteLog);
+    assert.equal(inviteLog.betGroupInviteReplyTexts[0], inviteText);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('scheduled broadcast sends the configured message once for the current day', async () => {
+  const pushRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const bodyText = Buffer.concat(chunks).toString('utf8');
+    if (req.url === '/v2/bot/message/push') {
+      pushRequests.push(JSON.parse(bodyText || '{}'));
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl,
+    BROADCAST_SCHEDULER_INTERVAL_MS: '50'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = login.headers.get('set-cookie') || '';
+    const scheduledTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Bangkok',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(new Date());
+
+    const createSchedule = await fetch(`${server.baseUrl}/broadcasts/schedules`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        cookie
+      },
+      body: new URLSearchParams({
+        title: 'เข้ากลุ่มทุกวัน',
+        targetId: 'UtargetBroadcast',
+        messageText: 'กลุ่ม1 ทดสอบ\nhttps://line.me/ti/g/example',
+        scheduledTime,
+        enabled: 'on'
+      }),
+      redirect: 'manual'
+    });
+    assert.equal(createSchedule.status, 302);
+
+    await waitForCondition(() => pushRequests.length > 0, 1200, 30);
+    assert.equal(pushRequests.length, 1);
+    assert.equal(pushRequests[0].to, 'UtargetBroadcast');
+    assert.equal(pushRequests[0].messages[0].type, 'text');
+    assert.match(pushRequests[0].messages[0].text, /กลุ่ม1 ทดสอบ/);
+
+    await delay(180);
+    assert.equal(pushRequests.length, 1);
+
+    const settings = await (await fetch(`${server.baseUrl}/api/broadcast-settings`, { headers: { cookie } })).json();
+    assert.equal(settings.schedules[0].lastSentDate.length, 10);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('ignores private chat C+ credit commands because credit requires a verified slip', async () => {
   const server = await startServer();
 

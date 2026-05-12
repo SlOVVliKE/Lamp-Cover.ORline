@@ -30,6 +30,10 @@ const DEFAULT_BET_GROUP_INVITE_TEXT = [
 ].join('\n');
 const BET_GROUP_INVITE_TEXT =
   parseMultilineEnv(process.env.BET_GROUP_INVITE_TEXT) || DEFAULT_BET_GROUP_INVITE_TEXT;
+const BROADCAST_TIMEZONE = process.env.BROADCAST_TIMEZONE || 'Asia/Bangkok';
+const BROADCAST_SCHEDULER_INTERVAL_MS = Number(process.env.BROADCAST_SCHEDULER_INTERVAL_MS) > 0
+  ? Number(process.env.BROADCAST_SCHEDULER_INTERVAL_MS)
+  : 30000;
 const EASYSLIP_API_KEY = process.env.EASYSLIP_API_KEY || '';
 const EASYSLIP_API_BASE_URL = process.env.EASYSLIP_API_BASE_URL || 'https://api.easyslip.com/v2';
 const EASYSLIP_MATCH_ACCOUNT = process.env.EASYSLIP_MATCH_ACCOUNT === 'true';
@@ -52,6 +56,7 @@ const MESSAGE_FILE = path.join(__dirname, 'messages.json');
 const WOUND_FILE = path.join(__dirname, 'wounds.json');
 const ROUND_FILE = path.join(__dirname, 'rounds.json');
 const QUEUE_LIST_FILE = path.join(__dirname, 'queueLists.json');
+const BROADCAST_FILE = path.join(__dirname, 'broadcasts.json');
 const CREDIT_FILE = path.join(__dirname, 'credits.json');
 const WITHDRAWAL_FILE = path.join(__dirname, 'withdrawals.json');
 const CLOSE_IMAGE_FILE = path.join(__dirname, 'ปิด.jpg');
@@ -62,6 +67,7 @@ const MAX_MESSAGES = 3000;
 const MAX_WOUNDS = 1000;
 const MAX_ROUNDS = 1000;
 const MAX_QUEUE_LISTS = 200;
+const MAX_BROADCAST_SCHEDULES = 200;
 const MAX_CREDITS = 5000;
 const MAX_WITHDRAWALS = 2000;
 const MAX_CREDIT_TRANSACTIONS = 200;
@@ -84,6 +90,7 @@ const MONGO_COLLECTION_BY_FILE = new Map([
   [WOUND_FILE, 'lamp_wounds'],
   [ROUND_FILE, 'lamp_rounds'],
   [QUEUE_LIST_FILE, 'lamp_queue_lists'],
+  [BROADCAST_FILE, 'lamp_broadcast_settings'],
   [CREDIT_FILE, 'lamp_credits'],
   [WITHDRAWAL_FILE, 'lamp_withdrawals']
 ]);
@@ -274,6 +281,58 @@ function readQueueLists() {
 
 function writeQueueLists(queueLists) {
   writeJsonArray(QUEUE_LIST_FILE, sortQueueLists(queueLists), MAX_QUEUE_LISTS);
+}
+
+function normalizeBroadcastTime(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  return match ? `${match[1]}:${match[2]}` : '';
+}
+
+function normalizeBroadcastSchedule(schedule) {
+  const nowTimestamp = Date.now();
+  return {
+    id: String(schedule?.id || `broadcast-${nowTimestamp}-${crypto.randomBytes(4).toString('hex')}`),
+    title: String(schedule?.title || '').trim(),
+    targetId: String(schedule?.targetId || '').trim(),
+    messageText: String(schedule?.messageText || '').replace(/\r\n/g, '\n').trim(),
+    scheduledTime: normalizeBroadcastTime(schedule?.scheduledTime),
+    enabled: schedule?.enabled !== false,
+    lastSentDate: String(schedule?.lastSentDate || '').trim(),
+    lastSentTimestamp: Number(schedule?.lastSentTimestamp) || 0,
+    lastSentTime: String(schedule?.lastSentTime || '').trim(),
+    createdTimestamp: Number(schedule?.createdTimestamp) || nowTimestamp,
+    updatedTimestamp: Number(schedule?.updatedTimestamp) || nowTimestamp
+  };
+}
+
+function normalizeBroadcastSettings(settings) {
+  const rawSchedules = Array.isArray(settings?.schedules) ? settings.schedules : [];
+  const schedules = rawSchedules
+    .map(normalizeBroadcastSchedule)
+    .filter((schedule) => schedule.targetId && schedule.messageText && schedule.scheduledTime)
+    .slice(0, MAX_BROADCAST_SCHEDULES);
+
+  return {
+    inviteText: String(settings?.inviteText || '').replace(/\r\n/g, '\n').trim(),
+    schedules,
+    updatedTimestamp: Number(settings?.updatedTimestamp) || 0,
+    updatedTime: String(settings?.updatedTime || '').trim()
+  };
+}
+
+function readBroadcastSettings() {
+  const rows = readJsonArray(BROADCAST_FILE, 'broadcasts.json');
+  return normalizeBroadcastSettings(rows[0] || {});
+}
+
+function writeBroadcastSettings(settings) {
+  const normalizedSettings = normalizeBroadcastSettings(settings);
+  writeJsonArray(BROADCAST_FILE, [normalizedSettings], 1);
+}
+
+function getBetGroupInviteText() {
+  return readBroadcastSettings().inviteText || BET_GROUP_INVITE_TEXT;
 }
 
 function clearQueueListForGroup(groupId) {
@@ -2722,6 +2781,101 @@ async function pushToLine(to, messages) {
   return response;
 }
 
+function getBroadcastLocalParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: BROADCAST_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+
+  return {
+    dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`
+  };
+}
+
+let broadcastSchedulerRunning = false;
+let broadcastSchedulerTimer = null;
+
+async function runScheduledBroadcasts(now = new Date()) {
+  if (broadcastSchedulerRunning) return;
+
+  broadcastSchedulerRunning = true;
+  try {
+    const settings = readBroadcastSettings();
+    const localParts = getBroadcastLocalParts(now);
+    const dueSchedules = settings.schedules.filter((schedule) => (
+      schedule.enabled &&
+      schedule.targetId &&
+      schedule.messageText &&
+      schedule.scheduledTime === localParts.time &&
+      schedule.lastSentDate !== localParts.dateKey
+    ));
+
+    if (dueSchedules.length === 0) return;
+
+    const timestamp = now.getTime();
+    const dueScheduleIds = new Set(dueSchedules.map((schedule) => schedule.id));
+    const nextSchedules = settings.schedules.map((schedule) => {
+      if (!dueScheduleIds.has(schedule.id)) return schedule;
+
+      return {
+        ...schedule,
+        lastSentDate: localParts.dateKey,
+        lastSentTimestamp: timestamp,
+        lastSentTime: formatDate(timestamp),
+        updatedTimestamp: timestamp
+      };
+    });
+
+    writeBroadcastSettings({
+      ...settings,
+      schedules: nextSchedules,
+      updatedTimestamp: timestamp,
+      updatedTime: formatDate(timestamp)
+    });
+
+    const logs = readLogs();
+    for (const schedule of dueSchedules) {
+      const response = await pushToLine(schedule.targetId, [schedule.messageText]).catch(() => null);
+      const pushStatus = response ? (response.ok ? 'sent' : 'failed') : 'skipped';
+      logs.unshift({
+        eventType: 'scheduled_broadcast_sent',
+        sourceType: 'web_admin',
+        userId: '',
+        groupId: schedule.targetId,
+        message: schedule.messageText,
+        timestamp,
+        time: formatDate(timestamp),
+        broadcastAction: 'scheduled_send',
+        broadcastScheduleId: schedule.id,
+        broadcastScheduleTitle: schedule.title,
+        broadcastScheduledTime: schedule.scheduledTime,
+        broadcastPushStatus: pushStatus
+      });
+    }
+    writeLogs(logs);
+  } finally {
+    broadcastSchedulerRunning = false;
+  }
+}
+
+function startBroadcastScheduler() {
+  if (broadcastSchedulerTimer || BROADCAST_SCHEDULER_INTERVAL_MS <= 0) return;
+
+  broadcastSchedulerTimer = setInterval(() => {
+    runScheduledBroadcasts().catch((error) => {
+      console.error('Scheduled broadcast failed:', error.message);
+    });
+  }, BROADCAST_SCHEDULER_INTERVAL_MS);
+  broadcastSchedulerTimer.unref?.();
+}
+
 async function downloadLineMessageContent(messageId) {
   if (!LINE_CHANNEL_ACCESS_TOKEN) {
     throw new Error('LINE_CHANNEL_ACCESS_TOKEN is not set');
@@ -3316,7 +3470,7 @@ function handleBetGroupInviteEvent(event) {
 
   return {
     type: 'bet_group_invite',
-    replyTexts: [BET_GROUP_INVITE_TEXT]
+    replyTexts: [getBetGroupInviteText()]
   };
 }
 
@@ -4625,6 +4779,7 @@ app.get('/', (req, res) => {
       <a href="/rounds">Rounds</a>
       <a href="/queue-lists">Queue Lists</a>
       <a href="/credits">Credits</a>
+      <a href="/broadcasts">Broadcasts</a>
       <a href="/api/logs">JSON API</a>
       <a href="/webhook">Webhook Path</a>
     </div>
@@ -5501,6 +5656,410 @@ function buildCreditsLoginPage(hasError = false) {
 </html>`;
 }
 
+function getBroadcastTargetOptions() {
+  const seen = new Set();
+  const options = [];
+
+  readAdmins().forEach((admin) => {
+    const groupId = String(admin.groupId || '').trim();
+    if (!groupId || seen.has(groupId)) return;
+
+    seen.add(groupId);
+    options.push({
+      value: groupId,
+      label: `${admin.groupName || 'กลุ่ม'} (${groupId})`
+    });
+  });
+
+  readCredits().forEach((credit) => {
+    const userId = String(credit.userId || '').trim();
+    if (!userId || seen.has(userId)) return;
+
+    seen.add(userId);
+    options.push({
+      value: userId,
+      label: `${credit.displayName || credit.userId} (${userId})`
+    });
+  });
+
+  return options;
+}
+
+function buildBroadcastsPage(settings, statusMessage = '') {
+  const schedules = settings.schedules || [];
+  const targetOptions = getBroadcastTargetOptions()
+    .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
+    .join('');
+  const scheduleCards = schedules
+    .map((schedule) => `<article class="schedule-card">
+      <div class="schedule-head">
+        <div>
+          <h3>${escapeHtml(schedule.title || 'ข้อความอัตโนมัติ')}</h3>
+          <p>${escapeHtml(schedule.scheduledTime)} · ${schedule.enabled ? 'เปิดใช้งาน' : 'ปิดอยู่'}</p>
+        </div>
+        <span class="status ${schedule.enabled ? 'enabled' : 'disabled'}">${schedule.enabled ? 'active' : 'paused'}</span>
+      </div>
+      <div class="target">${escapeHtml(schedule.targetId)}</div>
+      <pre>${escapeHtml(schedule.messageText)}</pre>
+      <div class="schedule-meta">ส่งล่าสุด: ${escapeHtml(schedule.lastSentTime || '-')}</div>
+      <div class="schedule-actions">
+        <form method="post" action="/broadcasts/schedules/${encodeURIComponent(schedule.id)}/toggle">
+          <button type="submit">${schedule.enabled ? 'ปิดส่ง' : 'เปิดส่ง'}</button>
+        </form>
+        <form method="post" action="/broadcasts/schedules/${encodeURIComponent(schedule.id)}/delete">
+          <button class="danger" type="submit">ลบ</button>
+        </form>
+      </div>
+    </article>`)
+    .join('');
+
+  return `<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ตั้งค่าข้อความ</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #111827;
+      background: #eef2f7;
+    }
+    main {
+      width: 100%;
+      max-width: 430px;
+      margin: 0 auto;
+      padding: 12px 10px 28px;
+    }
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+    .hint {
+      margin: 5px 0 0;
+      color: #6b7280;
+      font-size: 12px;
+    }
+    .actions {
+      display: flex;
+      gap: 7px;
+      align-items: flex-start;
+    }
+    .button, button {
+      min-height: 34px;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: #ffffff;
+      background: #047857;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .logout-button { background: #374151; }
+    .danger { background: #b91c1c; }
+    .panel, .schedule-card {
+      margin-bottom: 10px;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+      color: #374151;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    input, textarea {
+      width: 100%;
+      margin-top: 5px;
+      border: 1px solid #d1d5db;
+      border-radius: 9px;
+      padding: 9px 10px;
+      color: #111827;
+      background: #ffffff;
+      font-size: 15px;
+    }
+    textarea {
+      min-height: 160px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+    .small-textarea { min-height: 118px; }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 110px;
+      gap: 8px;
+    }
+    .check-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+      color: #374151;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .check-row input {
+      width: auto;
+      margin: 0;
+    }
+    .status-note {
+      margin: 0 0 10px;
+      padding: 9px 10px;
+      border-radius: 9px;
+      color: #065f46;
+      background: #d1fae5;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .preview {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #f8fafc;
+      color: #475569;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .schedule-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .schedule-head h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .schedule-head p {
+      margin: 3px 0 0;
+      color: #6b7280;
+      font-size: 12px;
+    }
+    .status {
+      align-self: flex-start;
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .enabled { color: #047857; background: #d1fae5; }
+    .disabled { color: #6b7280; background: #f3f4f6; }
+    .target {
+      margin-top: 8px;
+      color: #047857;
+      font-size: 12px;
+      font-weight: 800;
+      word-break: break-all;
+    }
+    pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #111827;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .schedule-meta {
+      margin-top: 8px;
+      color: #6b7280;
+      font-size: 11px;
+    }
+    .schedule-actions {
+      display: flex;
+      gap: 7px;
+      margin-top: 10px;
+    }
+    .empty {
+      padding: 18px 12px;
+      border: 1px dashed #cbd5e1;
+      border-radius: 12px;
+      color: #64748b;
+      text-align: center;
+      font-size: 13px;
+      background: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>ตั้งค่าข้อความ</h1>
+        <p class="hint">จัดข้อความปุ่มเข้ากลุ่ม และตั้งเวลาส่งอัตโนมัติรายวัน</p>
+      </div>
+      <div class="actions">
+        <a class="button" href="/credits">เครดิต</a>
+        <form method="post" action="/credits/logout">
+          <button class="logout-button" type="submit">Logout</button>
+        </form>
+      </div>
+    </div>
+    ${statusMessage ? `<div class="status-note">${escapeHtml(statusMessage)}</div>` : ''}
+    <section class="panel">
+      <h2>ปุ่มกดเข้ากลุ่ม</h2>
+      <form method="post" action="/broadcasts/invite">
+        <label>
+          ข้อความที่ส่งเมื่อผู้ใช้กด/พิมพ์ เข้ากลุ่มแทง
+          <textarea name="inviteText" required>${escapeHtml(settings.inviteText || BET_GROUP_INVITE_TEXT)}</textarea>
+        </label>
+        <button type="submit">บันทึกข้อความเข้ากลุ่ม</button>
+      </form>
+      <div class="preview">ใช้กับ keyword “เข้ากลุ่มแทง”, “กลุ่มแทง” และ rich menu postback action=bet_group_invite</div>
+    </section>
+    <section class="panel">
+      <h2>ส่งข้อความอัตโนมัติทุกวัน</h2>
+      <form method="post" action="/broadcasts/schedules">
+        <label>
+          ชื่อรายการ
+          <input name="title" type="text" maxlength="80" placeholder="เช่น เชิญเข้ากลุ่มรอบเช้า" required>
+        </label>
+        <label>
+          ปลายทาง LINE ID
+          <input name="targetId" list="broadcastTargets" type="text" placeholder="เช่น U..., C..., หรือ G..." required>
+          <datalist id="broadcastTargets">${targetOptions}</datalist>
+        </label>
+        <div class="form-row">
+          <label>
+            เวลา
+            <input name="scheduledTime" type="time" required>
+          </label>
+          <label class="check-row">
+            <input name="enabled" type="checkbox" checked>
+            เปิดส่ง
+          </label>
+        </div>
+        <label>
+          ข้อความที่จะส่ง
+          <textarea class="small-textarea" name="messageText" required placeholder="พิมพ์ข้อความและลิงก์กลุ่มได้หลายบรรทัด"></textarea>
+        </label>
+        <button type="submit">เพิ่มรายการส่งอัตโนมัติ</button>
+      </form>
+    </section>
+    <section>
+      ${scheduleCards || '<div class="empty">ยังไม่มีรายการส่งอัตโนมัติ</div>'}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+app.get('/broadcasts', requireCreditsAdminAuth, (req, res) => {
+  const status = req.query?.saved === 'invite'
+    ? 'บันทึกข้อความเข้ากลุ่มแล้ว'
+    : req.query?.saved === 'schedule'
+      ? 'บันทึกรายการส่งอัตโนมัติแล้ว'
+      : req.query?.saved === 'updated'
+        ? 'อัปเดตรายการแล้ว'
+        : '';
+
+  res.send(buildBroadcastsPage(readBroadcastSettings(), status));
+});
+
+app.post('/broadcasts/invite', requireCreditsAdminAuth, (req, res) => {
+  const inviteText = String(req.body?.inviteText || '').replace(/\r\n/g, '\n').trim();
+  if (!inviteText) {
+    return res.status(400).send('กรุณากรอกข้อความเข้ากลุ่ม');
+  }
+
+  const nowTimestamp = Date.now();
+  const settings = readBroadcastSettings();
+  writeBroadcastSettings({
+    ...settings,
+    inviteText,
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  });
+
+  return res.redirect('/broadcasts?saved=invite');
+});
+
+app.post('/broadcasts/schedules', requireCreditsAdminAuth, (req, res) => {
+  const title = String(req.body?.title || '').trim();
+  const targetId = String(req.body?.targetId || '').trim();
+  const messageText = String(req.body?.messageText || '').replace(/\r\n/g, '\n').trim();
+  const scheduledTime = normalizeBroadcastTime(req.body?.scheduledTime);
+
+  if (!title || !targetId || !messageText || !scheduledTime) {
+    return res.status(400).send('กรุณากรอกชื่อรายการ ปลายทาง เวลา และข้อความให้ครบ');
+  }
+
+  const nowTimestamp = Date.now();
+  const settings = readBroadcastSettings();
+  const schedule = normalizeBroadcastSchedule({
+    title,
+    targetId,
+    messageText,
+    scheduledTime,
+    enabled: req.body?.enabled === 'on',
+    createdTimestamp: nowTimestamp,
+    updatedTimestamp: nowTimestamp
+  });
+
+  writeBroadcastSettings({
+    ...settings,
+    schedules: [schedule, ...settings.schedules],
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  });
+
+  return res.redirect('/broadcasts?saved=schedule');
+});
+
+app.post('/broadcasts/schedules/:scheduleId/toggle', requireCreditsAdminAuth, (req, res) => {
+  const scheduleId = String(req.params.scheduleId || '').trim();
+  const nowTimestamp = Date.now();
+  const settings = readBroadcastSettings();
+
+  writeBroadcastSettings({
+    ...settings,
+    schedules: settings.schedules.map((schedule) => (
+      schedule.id === scheduleId
+        ? { ...schedule, enabled: !schedule.enabled, updatedTimestamp: nowTimestamp }
+        : schedule
+    )),
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  });
+
+  return res.redirect('/broadcasts?saved=updated');
+});
+
+app.post('/broadcasts/schedules/:scheduleId/delete', requireCreditsAdminAuth, (req, res) => {
+  const scheduleId = String(req.params.scheduleId || '').trim();
+  const nowTimestamp = Date.now();
+  const settings = readBroadcastSettings();
+
+  writeBroadcastSettings({
+    ...settings,
+    schedules: settings.schedules.filter((schedule) => schedule.id !== scheduleId),
+    updatedTimestamp: nowTimestamp,
+    updatedTime: formatDate(nowTimestamp)
+  });
+
+  return res.redirect('/broadcasts?saved=updated');
+});
+
 app.get('/credits/login', (req, res) => {
   if (isCreditsAdminAuthenticated(req)) {
     return res.redirect('/credits');
@@ -5995,6 +6554,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       </div>
       <div class="actions">
         <a class="button" href="/withdrawals">หน้าถอน</a>
+        <a class="button" href="/broadcasts">ข้อความ</a>
         <form method="post" action="/credits/logout">
           <button class="logout-button" type="submit">Logout</button>
         </form>
@@ -6482,6 +7042,15 @@ app.delete('/api/queue-lists', (req, res) => {
   res.json({ success: true });
 });
 
+app.get('/api/broadcast-settings', requireCreditsAdminAuth, (req, res) => {
+  res.json(readBroadcastSettings());
+});
+
+app.delete('/api/broadcast-settings', (req, res) => {
+  writeBroadcastSettings({ inviteText: '', schedules: [] });
+  res.json({ success: true });
+});
+
 app.get('/api/credits', (req, res) => {
   res.json(readCredits());
 });
@@ -6572,6 +7141,7 @@ async function startServer() {
     console.log(`LINE Webhook Logger is running on port ${PORT}`);
     console.log(`Storage driver: ${mongoConnected ? 'MongoDB' : 'JSON files'}`);
   });
+  startBroadcastScheduler();
 }
 
 startServer();

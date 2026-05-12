@@ -63,6 +63,8 @@ http://localhost:3000/webhook
 | GET | `/queue-lists` | Show saved queue lists |
 | GET | `/api/queue-lists` | Return saved queue lists as JSON |
 | DELETE | `/api/queue-lists` | Clear saved queue lists |
+| GET | `/broadcasts` | Admin page for group invite text and daily auto-send messages |
+| GET | `/api/broadcast-settings` | Return broadcast settings as JSON |
 | GET | `/wounds` | Show active and closed wounds |
 | GET | `/api/wounds` | Return wounds as JSON |
 | DELETE | `/api/wounds` | Clear wounds and tracked group messages |
@@ -92,6 +94,8 @@ LINE_OFFICIAL_ACCOUNT_URL=https://line.me/R/ti/p/your_line_oa_id
 LINE_OFFICIAL_ACCOUNT_NAME=Lamp cover.OR
 LINE_OFFICIAL_ACCOUNT_IMAGE_URL=
 BET_GROUP_INVITE_TEXT=เปิดฤดูกาลบั้งไฟแสน\nเข้ากลุ่มชมฟรี ส.กวิน\nมีกิจกรรมสำหรับพี่ๆที่มียอดการเล่น\n\nกลุ่ม1 คำผักหนาม\nhttps://line.me/ti/g/m4YA7PzmsE\n\nกลุ่ม2 หัวตะพาน\nhttps://line.me/ti/g/V79ffVz_7P
+BROADCAST_TIMEZONE=Asia/Bangkok
+BROADCAST_SCHEDULER_INTERVAL_MS=30000
 EASYSLIP_API_KEY=your_easyslip_api_key
 EASYSLIP_MATCH_ACCOUNT=false
 EASYSLIP_CHECK_DUPLICATE=true
@@ -266,6 +270,23 @@ CREDITS_ADMIN_SESSION_SECRET=change_this_secret
 
 The page shows LINE display names, profile pictures when available, each user's current balance, and a name search box instead of raw user IDs. It lets an admin manually add credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a top-up card to that user.
 
+## Broadcast Admin Page
+
+Open the message settings page:
+
+```text
+https://your-render-app.onrender.com/broadcasts
+```
+
+This page uses the same admin login as `/credits`.
+
+What you can configure:
+
+- The message sent when a user types `เข้ากลุ่มแทง`, `กลุ่มแทง`, or taps a rich menu postback with `action=bet_group_invite`
+- Daily scheduled messages by LINE target ID (`U...`, `G...`, or `C...`) and `HH:mm` time
+
+Scheduled sends use `BROADCAST_TIMEZONE` and run inside the web service process. Keep `LINE_CHANNEL_ACCESS_TOKEN` set so the bot can push messages.
+
 ## MongoDB Storage
 
 When `MONGODB_URI` is set, the app loads and writes these collections in MongoDB:
@@ -277,6 +298,7 @@ lamp_messages
 lamp_wounds
 lamp_rounds
 lamp_queue_lists
+lamp_broadcast_settings
 lamp_credits
 lamp_slips
 ```
@@ -591,7 +613,7 @@ User menu keywords:
 
 The bot replies with LINE Flex Message cards when `LINE_CHANNEL_ACCESS_TOKEN` is set. If the token is not set, the webhook still records credit data and logs, but it cannot send cards back to LINE.
 
-`เข้ากลุ่มแทง` replies with the betting group invite text. You can edit it on Render with `BET_GROUP_INVITE_TEXT`; use `\n` for line breaks.
+`เข้ากลุ่มแทง` replies with the betting group invite text. You can edit it from `/broadcasts`. If no value is saved there, the bot falls back to `BET_GROUP_INVITE_TEXT`; use `\n` for line breaks.
 
 Credit balances can be viewed at:
 
