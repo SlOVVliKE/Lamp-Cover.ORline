@@ -5829,7 +5829,8 @@ function buildBroadcastsPage(settings, statusMessage = '') {
     .form-row {
       display: grid;
       grid-template-columns: 1fr 110px;
-      gap: 8px;
+      gap: 14px;
+      margin-bottom: 14px;
     }
     .check-row {
       display: flex;
@@ -5843,6 +5844,9 @@ function buildBroadcastsPage(settings, statusMessage = '') {
     .check-row input {
       width: auto;
       margin: 0;
+    }
+    .schedule-submit {
+      margin-top: 4px;
     }
     .status-note {
       margin: 0 0 10px;
@@ -5955,7 +5959,7 @@ function buildBroadcastsPage(settings, statusMessage = '') {
             เปิดส่ง
           </label>
         </div>
-        <button type="submit">เพิ่มรายการส่งอัตโนมัติ</button>
+        <button class="schedule-submit" type="submit">เพิ่มรายการส่งอัตโนมัติ</button>
       </form>
     </section>
     <section>
