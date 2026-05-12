@@ -2878,6 +2878,96 @@ test('queue lookup replies with the same result summary format after result conf
   }
 });
 
+test('queue lookup does not reuse old round results after a new queue list is posted', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    const oldQueueText = [
+      'คิวจุดรายการ',
+      'แอ็ดเทวดา',
+      'ศ.ราชวงศ์'
+    ].join('\n');
+    const newQueueText = [
+      'คิวจุดรายการ',
+      '1.แอ็ดเทวดา',
+      '2.ศ.ราชวงศ์',
+      '3.หนุ่ม กทม'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-new-list-reset', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-old-save', text: oldQueueText },
+        timestamp: 1710000310000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-open', text: 'เปิด แอ็ดเทวดา 330-450' },
+        timestamp: 1710000311000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-close', text: 'ปิด' },
+        timestamp: 1710000312000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-result-1', text: 'แจ้งผล 350' },
+        timestamp: 1710000313000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-result-2', text: 'แจ้งผล 350' },
+        timestamp: 1710000314000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-finish', text: 'สิ้นสุด' },
+        timestamp: 1710000315000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-new-list-reset-new-save', text: newQueueText },
+        timestamp: 1710000316000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-new-list-reset', userId: 'Umember' },
+        message: { type: 'text', id: 'm-new-list-reset-lookup', text: 'คิวจุด' },
+        timestamp: 1710000317000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested);
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, true);
+
+    const reply = queueLookupLog.queueLookupReplyTexts[0];
+    assert.match(reply, /^คิวจุด✅/);
+    assert.match(reply, /แอ็ดเทวดา/);
+    assert.match(reply, /หนุ่ม กทม/);
+    assert.equal(reply.includes('330-450'), false);
+    assert.equal(reply.includes('350'), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('replies that no queue exists from queue lookup keywords', async () => {
   const server = await startServer();
 

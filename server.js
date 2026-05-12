@@ -1168,6 +1168,35 @@ function getLatestQueueListForGroup(groupId) {
   return readQueueLists().find((queueList) => queueList.groupId === groupId) || null;
 }
 
+function getQueueListTimestamp(queueList) {
+  return Number(queueList?.timestamp || 0);
+}
+
+function getRoundLatestActivityTimestamp(round) {
+  return Math.max(
+    Number(round?.openedTimestamp || 0),
+    Number(round?.priceSetTimestamp || 0),
+    Number(round?.noBuilderAnnouncedTimestamp || 0),
+    Number(round?.closedTimestamp || 0),
+    Number(round?.resultTimestamp || 0),
+    Number(round?.cancelledTimestamp || 0)
+  );
+}
+
+function isRoundInQueueListWindow(round, queueList) {
+  const queueListTimestamp = getQueueListTimestamp(queueList);
+  if (!queueListTimestamp) return true;
+
+  return getRoundLatestActivityTimestamp(round) >= queueListTimestamp;
+}
+
+function readRoundsForQueueList(groupId, queueList) {
+  return readRounds()
+    .filter((round) => round.groupId === groupId)
+    .filter((round) => !queueList || isRoundInQueueListWindow(round, queueList))
+    .sort((roundA, roundB) => (roundA.openedTimestamp || 0) - (roundB.openedTimestamp || 0));
+}
+
 function upsertRound(roundEntry) {
   const rounds = readRounds().filter((round) => round.id !== roundEntry.id);
   writeRounds([roundEntry, ...rounds]);
@@ -1317,10 +1346,8 @@ function buildResultConfirmedReply(round, result) {
 }
 
 function buildQueueSummary(groupId) {
-  const rounds = readRounds()
-    .filter((round) => round.groupId === groupId)
-    .sort((roundA, roundB) => (roundA.openedTimestamp || 0) - (roundB.openedTimestamp || 0));
   const queueList = getLatestQueueListForGroup(groupId);
+  const rounds = readRoundsForQueueList(groupId, queueList);
 
   if (!queueList) {
     const lines = rounds.map(buildRoundResultLine);
@@ -1368,9 +1395,7 @@ function isQueueListFinished(groupId) {
   }
 
   const roundsByName = new Map(
-    readRounds()
-      .filter((round) => round.groupId === groupId)
-      .map((round) => [normalizeGroupName(round.queueName), round])
+    readRoundsForQueueList(groupId, queueList).map((round) => [normalizeGroupName(round.queueName), round])
   );
 
   return queueList.items.every((item) => {
