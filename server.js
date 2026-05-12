@@ -310,7 +310,7 @@ function normalizeBroadcastSettings(settings) {
   const rawSchedules = Array.isArray(settings?.schedules) ? settings.schedules : [];
   const schedules = rawSchedules
     .map(normalizeBroadcastSchedule)
-    .filter((schedule) => schedule.targetId && schedule.messageText && schedule.scheduledTime)
+    .filter((schedule) => schedule.scheduledTime)
     .slice(0, MAX_BROADCAST_SCHEDULES);
 
   return {
@@ -2781,6 +2781,30 @@ async function pushToLine(to, messages) {
   return response;
 }
 
+async function broadcastToLine(messages) {
+  if (!LINE_CHANNEL_ACCESS_TOKEN || messages.length === 0) {
+    return null;
+  }
+
+  const response = await fetch(`${LINE_MESSAGING_API_URL}/v2/bot/message/broadcast`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`
+    },
+    body: JSON.stringify({
+      messages: messages.slice(0, 5).map(toLineMessage)
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`LINE broadcast failed: ${response.status} ${errorText}`);
+  }
+
+  return response;
+}
+
 function getBroadcastLocalParts(date = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: BROADCAST_TIMEZONE,
@@ -2808,11 +2832,11 @@ async function runScheduledBroadcasts(now = new Date()) {
   broadcastSchedulerRunning = true;
   try {
     const settings = readBroadcastSettings();
+    const sharedMessageText = settings.inviteText || BET_GROUP_INVITE_TEXT;
     const localParts = getBroadcastLocalParts(now);
     const dueSchedules = settings.schedules.filter((schedule) => (
       schedule.enabled &&
-      schedule.targetId &&
-      schedule.messageText &&
+      sharedMessageText &&
       schedule.scheduledTime === localParts.time &&
       schedule.lastSentDate !== localParts.dateKey
     ));
@@ -2842,21 +2866,22 @@ async function runScheduledBroadcasts(now = new Date()) {
 
     const logs = readLogs();
     for (const schedule of dueSchedules) {
-      const response = await pushToLine(schedule.targetId, [schedule.messageText]).catch(() => null);
-      const pushStatus = response ? (response.ok ? 'sent' : 'failed') : 'skipped';
+      const response = await broadcastToLine([sharedMessageText]).catch(() => null);
+      const broadcastStatus = response ? (response.ok ? 'sent' : 'failed') : 'skipped';
       logs.unshift({
         eventType: 'scheduled_broadcast_sent',
         sourceType: 'web_admin',
         userId: '',
-        groupId: schedule.targetId,
-        message: schedule.messageText,
+        groupId: '',
+        message: sharedMessageText,
         timestamp,
         time: formatDate(timestamp),
         broadcastAction: 'scheduled_send',
         broadcastScheduleId: schedule.id,
         broadcastScheduleTitle: schedule.title,
         broadcastScheduledTime: schedule.scheduledTime,
-        broadcastPushStatus: pushStatus
+        broadcastDelivery: 'broadcast',
+        broadcastPushStatus: broadcastStatus
       });
     }
     writeLogs(logs);
@@ -5687,9 +5712,6 @@ function getBroadcastTargetOptions() {
 
 function buildBroadcastsPage(settings, statusMessage = '') {
   const schedules = settings.schedules || [];
-  const targetOptions = getBroadcastTargetOptions()
-    .map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`)
-    .join('');
   const scheduleCards = schedules
     .map((schedule) => `<article class="schedule-card">
       <div class="schedule-head">
@@ -5699,8 +5721,7 @@ function buildBroadcastsPage(settings, statusMessage = '') {
         </div>
         <span class="status ${schedule.enabled ? 'enabled' : 'disabled'}">${schedule.enabled ? 'active' : 'paused'}</span>
       </div>
-      <div class="target">${escapeHtml(schedule.targetId)}</div>
-      <pre>${escapeHtml(schedule.messageText)}</pre>
+      <div class="target">ใช้ข้อความเข้ากลุ่มด้านบน</div>
       <div class="schedule-meta">ส่งล่าสุด: ${escapeHtml(schedule.lastSentTime || '-')}</div>
       <div class="schedule-actions">
         <form method="post" action="/broadcasts/schedules/${encodeURIComponent(schedule.id)}/toggle">
@@ -5832,15 +5853,6 @@ function buildBroadcastsPage(settings, statusMessage = '') {
       font-size: 13px;
       font-weight: 800;
     }
-    .preview {
-      margin-top: 10px;
-      padding: 10px;
-      border-radius: 10px;
-      background: #f8fafc;
-      color: #475569;
-      font-size: 12px;
-      line-height: 1.5;
-    }
     .schedule-head {
       display: flex;
       justify-content: space-between;
@@ -5925,19 +5937,13 @@ function buildBroadcastsPage(settings, statusMessage = '') {
         </label>
         <button type="submit">บันทึกข้อความเข้ากลุ่ม</button>
       </form>
-      <div class="preview">ใช้กับ keyword “เข้ากลุ่มแทง”, “กลุ่มแทง” และ rich menu postback action=bet_group_invite</div>
     </section>
     <section class="panel">
-      <h2>ส่งข้อความอัตโนมัติทุกวัน</h2>
+      <h2>ตั้งเวลาส่งข้อความเข้ากลุ่มทุกวัน</h2>
       <form method="post" action="/broadcasts/schedules">
         <label>
           ชื่อรายการ
           <input name="title" type="text" maxlength="80" placeholder="เช่น เชิญเข้ากลุ่มรอบเช้า" required>
-        </label>
-        <label>
-          ปลายทาง LINE ID
-          <input name="targetId" list="broadcastTargets" type="text" placeholder="เช่น U..., C..., หรือ G..." required>
-          <datalist id="broadcastTargets">${targetOptions}</datalist>
         </label>
         <div class="form-row">
           <label>
@@ -5949,10 +5955,6 @@ function buildBroadcastsPage(settings, statusMessage = '') {
             เปิดส่ง
           </label>
         </div>
-        <label>
-          ข้อความที่จะส่ง
-          <textarea class="small-textarea" name="messageText" required placeholder="พิมพ์ข้อความและลิงก์กลุ่มได้หลายบรรทัด"></textarea>
-        </label>
         <button type="submit">เพิ่มรายการส่งอัตโนมัติ</button>
       </form>
     </section>
@@ -5996,20 +5998,21 @@ app.post('/broadcasts/invite', requireCreditsAdminAuth, (req, res) => {
 
 app.post('/broadcasts/schedules', requireCreditsAdminAuth, (req, res) => {
   const title = String(req.body?.title || '').trim();
-  const targetId = String(req.body?.targetId || '').trim();
-  const messageText = String(req.body?.messageText || '').replace(/\r\n/g, '\n').trim();
   const scheduledTime = normalizeBroadcastTime(req.body?.scheduledTime);
 
-  if (!title || !targetId || !messageText || !scheduledTime) {
-    return res.status(400).send('กรุณากรอกชื่อรายการ ปลายทาง เวลา และข้อความให้ครบ');
+  if (!title || !scheduledTime) {
+    return res.status(400).send('กรุณากรอกชื่อรายการและเวลาให้ครบ');
   }
 
   const nowTimestamp = Date.now();
   const settings = readBroadcastSettings();
+  const sharedMessageText = settings.inviteText || BET_GROUP_INVITE_TEXT;
+  if (!sharedMessageText) {
+    return res.status(400).send('กรุณาบันทึกข้อความเข้ากลุ่มก่อน');
+  }
+
   const schedule = normalizeBroadcastSchedule({
     title,
-    targetId,
-    messageText,
     scheduledTime,
     enabled: req.body?.enabled === 'on',
     createdTimestamp: nowTimestamp,

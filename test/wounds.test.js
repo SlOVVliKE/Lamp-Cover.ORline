@@ -3463,6 +3463,7 @@ test('replies with betting group invite links from the private menu keyword', as
 
   try {
     await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
 
     await postWebhook(server.baseUrl, [
       {
@@ -3497,6 +3498,7 @@ test('replies with betting group invite links from a private rich menu postback'
 
   try {
     await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
 
     await postWebhook(server.baseUrl, [
       {
@@ -3549,6 +3551,9 @@ test('admin broadcast page updates the betting group invite message', async () =
     assert.match(html, /name="inviteText"/);
     assert.match(html, /name="scheduledTime"/);
     assert.match(html, /href="\/credits"/);
+    assert.doesNotMatch(html, /ใช้กับ keyword/);
+    assert.doesNotMatch(html, /name="targetId"/);
+    assert.doesNotMatch(html, /name="messageText"/);
 
     const inviteText = [
       'เปิดฤดูกาลบั้งไฟแสน',
@@ -3586,14 +3591,14 @@ test('admin broadcast page updates the betting group invite message', async () =
   }
 });
 
-test('scheduled broadcast sends the configured message once for the current day', async () => {
-  const pushRequests = [];
+test('scheduled broadcast sends the shared invite message once for the current day', async () => {
+  const broadcastRequests = [];
   const lineServer = await startHttpMock(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const bodyText = Buffer.concat(chunks).toString('utf8');
-    if (req.url === '/v2/bot/message/push') {
-      pushRequests.push(JSON.parse(bodyText || '{}'));
+    if (req.url === '/v2/bot/message/broadcast') {
+      broadcastRequests.push(JSON.parse(bodyText || '{}'));
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3622,6 +3627,18 @@ test('scheduled broadcast sends the configured message once for the current day'
       minute: '2-digit',
       hour12: false
     }).format(new Date());
+    const inviteText = 'กลุ่ม1 ทดสอบ\nhttps://line.me/ti/g/example';
+
+    const saveInvite = await fetch(`${server.baseUrl}/broadcasts/invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        cookie
+      },
+      body: new URLSearchParams({ inviteText }),
+      redirect: 'manual'
+    });
+    assert.equal(saveInvite.status, 302);
 
     const createSchedule = await fetch(`${server.baseUrl}/broadcasts/schedules`, {
       method: 'POST',
@@ -3631,8 +3648,6 @@ test('scheduled broadcast sends the configured message once for the current day'
       },
       body: new URLSearchParams({
         title: 'เข้ากลุ่มทุกวัน',
-        targetId: 'UtargetBroadcast',
-        messageText: 'กลุ่ม1 ทดสอบ\nhttps://line.me/ti/g/example',
         scheduledTime,
         enabled: 'on'
       }),
@@ -3640,14 +3655,13 @@ test('scheduled broadcast sends the configured message once for the current day'
     });
     assert.equal(createSchedule.status, 302);
 
-    await waitForCondition(() => pushRequests.length > 0, 1200, 30);
-    assert.equal(pushRequests.length, 1);
-    assert.equal(pushRequests[0].to, 'UtargetBroadcast');
-    assert.equal(pushRequests[0].messages[0].type, 'text');
-    assert.match(pushRequests[0].messages[0].text, /กลุ่ม1 ทดสอบ/);
+    await waitForCondition(() => broadcastRequests.length > 0, 1200, 30);
+    assert.equal(broadcastRequests.length, 1);
+    assert.equal(broadcastRequests[0].messages[0].type, 'text');
+    assert.match(broadcastRequests[0].messages[0].text, /กลุ่ม1 ทดสอบ/);
 
     await delay(180);
-    assert.equal(pushRequests.length, 1);
+    assert.equal(broadcastRequests.length, 1);
 
     const settings = await (await fetch(`${server.baseUrl}/api/broadcast-settings`, { headers: { cookie } })).json();
     assert.equal(settings.schedules[0].lastSentDate.length, 10);

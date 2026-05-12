@@ -283,9 +283,9 @@ This page uses the same admin login as `/credits`.
 What you can configure:
 
 - The message sent when a user types `เข้ากลุ่มแทง`, `กลุ่มแทง`, or taps a rich menu postback with `action=bet_group_invite`
-- Daily scheduled messages by LINE target ID (`U...`, `G...`, or `C...`) and `HH:mm` time
+- Daily scheduled broadcast time for the same invite message
 
-Scheduled sends use `BROADCAST_TIMEZONE` and run inside the web service process. Keep `LINE_CHANNEL_ACCESS_TOKEN` set so the bot can push messages.
+Scheduled sends use `BROADCAST_TIMEZONE` and run inside the web service process. Keep `LINE_CHANNEL_ACCESS_TOKEN` set so the bot can broadcast the invite message to OA friends.
 
 ## MongoDB Storage
 
