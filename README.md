@@ -282,7 +282,8 @@ This page uses the same admin login as `/credits`.
 
 What you can configure:
 
-- The message sent when a user types `เข้ากลุ่มแทง`, `กลุ่มแทง`, or taps a rich menu postback with `action=bet_group_invite`
+- The message sent when a user types `เข้ากลุ่มแทง`, `กลุ่มแทง`, or taps a rich menu Message action that sends `เข้ากลุ่มแทง`
+- For the rich menu button, use LINE's Message action. Do not use `action=join_group`.
 - Daily scheduled broadcast time for the same invite message
 
 Scheduled sends use `BROADCAST_TIMEZONE` and run inside the web service process. Keep `LINE_CHANNEL_ACCESS_TOKEN` set so the bot can broadcast the invite message to OA friends.

@@ -3883,6 +3883,35 @@ test('replies with betting group invite links from a private rich menu postback'
   }
 });
 
+test('ignores join_group postback because the menu button should send text', async () => {
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: '',
+    BET_GROUP_INVITE_TEXT: 'กลุ่ม1 ทดสอบ\\nhttps://line.me/ti/g/example'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'postback',
+        source: { type: 'user', userId: 'UlegacyJoinGroupPostback' },
+        replyToken: 'reply-legacy-join-group',
+        postback: { data: 'action=join_group' },
+        timestamp: 1710000082575
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
+
+    assert.equal(inviteLog, undefined);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('admin broadcast page updates the betting group invite message', async () => {
   const server = await startServer({
     LINE_CHANNEL_ACCESS_TOKEN: '',
@@ -4032,12 +4061,16 @@ test('scheduled broadcast sends the shared invite message once for the current d
   }
 });
 
-test('uses the same saved invite message for rich menu button and scheduled broadcast', async () => {
+test('uses the same saved invite message for rich menu text button and scheduled broadcast', async () => {
   const broadcastRequests = [];
+  const replyRequests = [];
   const lineServer = await startHttpMock(async (req, res) => {
     const body = await readRequestJson(req);
     if (req.url === '/v2/bot/message/broadcast') {
       broadcastRequests.push(body);
+    }
+    if (req.url === '/v2/bot/message/reply') {
+      replyRequests.push(body);
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4100,21 +4133,20 @@ test('uses the same saved invite message for rich menu button and scheduled broa
 
     await postWebhook(server.baseUrl, [
       {
-        type: 'postback',
+        type: 'message',
         source: { type: 'user', userId: 'UsharedInviteButton' },
         replyToken: 'reply-shared-invite-button',
-        postback: { data: 'action=join_group' },
+        message: { type: 'text', id: 'm-shared-invite-button', text: 'เข้ากลุ่มแทง' },
         timestamp: 1710000082750
       }
     ]);
 
+    await waitForCondition(() => replyRequests.length > 0, 1200, 30);
     await waitForCondition(() => broadcastRequests.length > 0, 1200, 30);
 
-    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
-    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
-
-    assert.ok(inviteLog);
-    assert.equal(inviteLog.betGroupInviteReplyTexts[0], inviteText);
+    assert.equal(replyRequests.length, 1);
+    assert.equal(replyRequests[0].messages[0].type, 'text');
+    assert.equal(replyRequests[0].messages[0].text, inviteText);
     assert.equal(broadcastRequests.length, 1);
     assert.equal(broadcastRequests[0].messages[0].type, 'text');
     assert.equal(broadcastRequests[0].messages[0].text, inviteText);

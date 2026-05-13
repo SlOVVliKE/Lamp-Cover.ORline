@@ -1506,12 +1506,7 @@ function isBetGroupInviteAction(value) {
   const normalizedAction = text.toLowerCase().replace(/[-\s]+/g, '_');
   return [
     'bet_group_invite',
-    'betgroupinvite',
-    'join_group',
-    'join_bet_group',
-    'bet_group',
-    'group_invite',
-    'invite_group'
+    'betgroupinvite'
   ].includes(normalizedAction);
 }
 
