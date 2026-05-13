@@ -45,11 +45,21 @@ const PAYMENT_ACCOUNT_BANK = process.env.PAYMENT_ACCOUNT_BANK || 'กรุง�
 const PAYMENT_ACCOUNT_NAME = process.env.PAYMENT_ACCOUNT_NAME || 'ภาณุเดช กุมแก้ว';
 const ADMIN_KEYWORD = process.env.ADMIN_KEYWORD || 'I AM ADMIN';
 const REMOVE_ADMIN_KEYWORD = process.env.REMOVE_ADMIN_KEYWORD || 'IAMNOTADMIN';
-const CREDITS_ADMIN_USERNAME = process.env.CREDITS_ADMIN_USERNAME || 'Admin';
-const CREDITS_ADMIN_PASSWORD = process.env.CREDITS_ADMIN_PASSWORD || 'admin123';
+const IS_PRODUCTION_RUNTIME =
+  process.env.NODE_ENV === 'production' ||
+  process.env.RENDER === 'true' ||
+  Boolean(process.env.RENDER_SERVICE_ID);
+const ALLOW_DEFAULT_CREDITS_ADMIN =
+  process.env.ALLOW_DEFAULT_CREDITS_ADMIN === 'true' ||
+  process.env.NODE_ENV === 'test' ||
+  !IS_PRODUCTION_RUNTIME;
+const CREDITS_ADMIN_USERNAME = process.env.CREDITS_ADMIN_USERNAME || (ALLOW_DEFAULT_CREDITS_ADMIN ? 'Admin' : '');
+const CREDITS_ADMIN_PASSWORD = process.env.CREDITS_ADMIN_PASSWORD || (ALLOW_DEFAULT_CREDITS_ADMIN ? 'admin123' : '');
 const CREDITS_ADMIN_COOKIE_NAME = 'lamp_credits_admin';
 const CREDITS_ADMIN_SESSION_SECRET =
-  process.env.CREDITS_ADMIN_SESSION_SECRET || LINE_CHANNEL_SECRET || CREDITS_ADMIN_PASSWORD;
+  process.env.CREDITS_ADMIN_SESSION_SECRET ||
+  LINE_CHANNEL_SECRET ||
+  (ALLOW_DEFAULT_CREDITS_ADMIN ? CREDITS_ADMIN_PASSWORD : '');
 const LOG_FILE = path.join(__dirname, 'logs.json');
 const ADMIN_FILE = path.join(__dirname, 'admins.json');
 const MESSAGE_FILE = path.join(__dirname, 'messages.json');
@@ -80,6 +90,7 @@ const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
 const WIN_PAYOUT_RATE = 0.95;
 const WITHDRAWAL_OPEN_HOUR = 18;
 const WITHDRAWAL_CLOSE_HOUR = 8;
+const WITHDRAWAL_TIME_CHECK_DISABLED = process.env.WITHDRAWAL_TIME_CHECK_DISABLED === 'true';
 const WITHDRAWAL_TOKEN_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const NO_QUEUE_REPLY = 'ตอนนี้ยังไม่มีคิวจุดครับ ✅\nรอแอดมินวางคิวก่อนนะครับ 🚀';
 const REPEATED_TRADE_WARNING_THRESHOLD = 3;
@@ -107,6 +118,9 @@ let mongoDb = null;
 let mongoConnected = false;
 const mongoCache = new Map();
 const mongoWriteQueues = new Map();
+const jsonReservedSlipTransRefs = new Set();
+let mongoSyncCounter = 0;
+let linePushMonthlyLimitReached = false;
 
 function parseMultilineEnv(value) {
   return String(value || '').replace(/\\n/g, '\n').trim();
@@ -125,7 +139,7 @@ function stripMongoId(value) {
     return value;
   }
 
-  const { _id, __sortIndex, ...rest } = value;
+  const { _id, __sortIndex, __syncVersion, ...rest } = value;
   return Object.fromEntries(Object.entries(rest).map(([key, item]) => [key, stripMongoId(item)]));
 }
 
@@ -149,15 +163,25 @@ function queueMongoCollectionReplace(filePath, rows) {
   const collection = getMongoCollectionForFile(filePath);
   if (!collection) return;
 
-  const docs = cloneJson(rows).map((row, index) => ({ ...row, __sortIndex: index }));
+  const syncVersion = Date.now() * 1000 + (mongoSyncCounter = (mongoSyncCounter + 1) % 1000);
+  const docs = cloneJson(rows).map((row, index) => ({ ...row, __sortIndex: index, __syncVersion: syncVersion }));
   const previousWrite = mongoWriteQueues.get(filePath) || Promise.resolve();
   const nextWrite = previousWrite
     .catch(() => {})
     .then(async () => {
-      await collection.deleteMany({});
       if (docs.length > 0) {
-        await collection.insertMany(docs, { ordered: true });
+        await collection.bulkWrite(
+          docs.map((doc) => ({
+            replaceOne: {
+              filter: { __sortIndex: doc.__sortIndex, __syncVersion: syncVersion },
+              replacement: doc,
+              upsert: true
+            }
+          })),
+          { ordered: true }
+        );
       }
+      await collection.deleteMany({ __syncVersion: { $ne: syncVersion } });
     })
     .catch((error) => {
       console.error(`Unable to write MongoDB collection ${collection.collectionName}:`, error.message);
@@ -198,10 +222,20 @@ async function initMongoStorage() {
   for (const [filePath, collectionName] of MONGO_COLLECTION_BY_FILE.entries()) {
     const collection = mongoDb.collection(collectionName);
     await collection.createIndex({ __sortIndex: 1 });
+    await collection.createIndex({ __syncVersion: 1 });
     let rows = await collection.find({}).sort({ __sortIndex: 1 }).toArray();
 
     if (rows.length === 0) {
       rows = await seedMongoCollectionFromJson(filePath, collection);
+    } else {
+      const syncVersions = rows
+        .map((row) => Number(row.__syncVersion) || 0)
+        .filter((syncVersion) => syncVersion > 0);
+      if (syncVersions.length > 0) {
+        const latestSyncVersion = Math.max(...syncVersions);
+        rows = rows.filter((row) => Number(row.__syncVersion) === latestSyncVersion);
+        await collection.deleteMany({ __syncVersion: { $ne: latestSyncVersion } });
+      }
     }
 
     mongoCache.set(filePath, stripMongoId(rows));
@@ -423,6 +457,8 @@ function parseCookies(cookieHeader) {
 }
 
 function getCreditsAdminAuthToken() {
+  if (!isCreditsAdminConfigured()) return '';
+
   return crypto
     .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
     .update(`${CREDITS_ADMIN_USERNAME}:${CREDITS_ADMIN_PASSWORD}`)
@@ -430,6 +466,8 @@ function getCreditsAdminAuthToken() {
 }
 
 function getCreditsAdminUserToken(userId) {
+  if (!CREDITS_ADMIN_SESSION_SECRET) return '';
+
   return crypto
     .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
     .update(`credit-user:${userId}`)
@@ -446,6 +484,8 @@ function getCreditUserIdFromAdminToken(userToken) {
 }
 
 function signWithdrawalTokenPayload(payload) {
+  if (!CREDITS_ADMIN_SESSION_SECRET) return '';
+
   return crypto
     .createHmac('sha256', CREDITS_ADMIN_SESSION_SECRET)
     .update(payload)
@@ -493,27 +533,46 @@ function safeStringEqual(left, right) {
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+function isCreditsAdminConfigured() {
+  return Boolean(CREDITS_ADMIN_USERNAME && CREDITS_ADMIN_PASSWORD && CREDITS_ADMIN_SESSION_SECRET);
+}
+
+function isTestAdminApiAuthDisabled() {
+  return process.env.NODE_ENV === 'test' && process.env.ADMIN_API_AUTH_DISABLED === 'true';
+}
+
 function isCreditsAdminAuthenticated(req) {
+  if (!isCreditsAdminConfigured()) return false;
+
   const cookies = parseCookies(req.get('cookie'));
   return safeStringEqual(cookies[CREDITS_ADMIN_COOKIE_NAME], getCreditsAdminAuthToken());
 }
 
-function setCreditsAdminCookie(res) {
+function getSecureCookieAttribute(req) {
+  const forwardedProto = String(req.get?.('x-forwarded-proto') || '').split(',')[0].trim();
+  return req.secure || forwardedProto === 'https' ? '; Secure' : '';
+}
+
+function setCreditsAdminCookie(req, res) {
   const maxAgeSeconds = 12 * 60 * 60;
   res.setHeader(
     'Set-Cookie',
-    `${CREDITS_ADMIN_COOKIE_NAME}=${encodeURIComponent(getCreditsAdminAuthToken())}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax`
+    `${CREDITS_ADMIN_COOKIE_NAME}=${encodeURIComponent(getCreditsAdminAuthToken())}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${getSecureCookieAttribute(req)}`
   );
 }
 
-function clearCreditsAdminCookie(res) {
+function clearCreditsAdminCookie(req, res) {
   res.setHeader(
     'Set-Cookie',
-    `${CREDITS_ADMIN_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`
+    `${CREDITS_ADMIN_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${getSecureCookieAttribute(req)}`
   );
 }
 
 function requireCreditsAdminAuth(req, res, next) {
+  if (req.path.startsWith('/api/') && req.method !== 'POST' && isTestAdminApiAuthDisabled()) {
+    return next();
+  }
+
   if (isCreditsAdminAuthenticated(req)) {
     return next();
   }
@@ -938,6 +997,16 @@ function parseQueueLookupKeyword(message) {
   return QUEUE_LOOKUP_KEYWORDS.includes(normalizeMessageText(message));
 }
 
+function hasQueueItemContentAfterBlank(lines, blankIndex) {
+  for (const line of lines.slice(blankIndex + 1)) {
+    if (!line || isQueueSeparatorLine(line)) continue;
+    if (/^หมายเหตุ/.test(line) || isQueueFooterLine(line)) return false;
+    return true;
+  }
+
+  return false;
+}
+
 function parseQueueListMessage(message) {
   const rawLines = String(message || '').replace(/\r\n/g, '\n').split('\n');
   const lines = rawLines.map((line) => normalizeQueueLine(line));
@@ -956,13 +1025,17 @@ function parseQueueListMessage(message) {
     line.length === 0 &&
     (firstNumberedItemIndex < 0 || index < firstNumberedItemIndex)
   );
+  const hasItemAfterFirstBlank =
+    firstBlankAfterHeader >= 0 && hasQueueItemContentAfterBlank(lines, firstBlankAfterHeader);
+  const blankSeparatesHeaderFromItems =
+    firstBlankAfterHeader >= 0 && (firstNumberedItemIndex >= 0 || hasItemAfterFirstBlank);
   const itemStartIndex =
-    firstBlankAfterHeader >= 0
+    blankSeparatesHeaderFromItems
       ? firstBlankAfterHeader + 1
       : firstNumberedItemIndex >= 0
         ? firstNumberedItemIndex
         : firstContentIndex + 1;
-  const headerEndIndex = firstBlankAfterHeader >= 0 ? firstBlankAfterHeader : itemStartIndex;
+  const headerEndIndex = blankSeparatesHeaderFromItems ? firstBlankAfterHeader : itemStartIndex;
   const headerLines = lines
     .slice(firstContentIndex, headerEndIndex)
     .filter((line) => line && !isQueueSeparatorLine(line));
@@ -1026,7 +1099,38 @@ function parseQueueListMessage(message) {
   };
 }
 
+function looksLikeQueueListAttempt(message) {
+  const rawLines = String(message || '').replace(/\r\n/g, '\n').split('\n');
+  const lines = rawLines.map((line) => normalizeQueueLine(line)).filter((line) => line.length > 0);
+  if (lines.length < 2) return false;
+
+  const firstLine = lines[0] || '';
+  if (getQueueListKeyword(firstLine)) return true;
+  if (/คิว/.test(firstLine) && lines.length >= 3) return true;
+
+  return false;
+}
+
 function buildQueueListErrorReply(error) {
+  if (error === 'missing_keyword') {
+    return [
+      'คิวไม่ติด ❌',
+      '',
+      'ปัญหา: ขาดคำขึ้นต้นคิวจุดรายการ',
+      'วิธีแก้: ให้บรรทัดแรกเป็น คิวจุดรายการ หรือ จุดรายการ แล้วตามด้วยรายชื่อคิว',
+      '',
+      'ตัวอย่าง:',
+      'คิวจุดรายการ',
+      '1.ชื่อคิว',
+      '2.ชื่อคิว',
+      '',
+      'หรือ',
+      'จุดรายการ',
+      'ชื่อคิว',
+      'ชื่อคิว'
+    ].join('\n');
+  }
+
   if (error === 'missing_items') {
     return [
       'คิวไม่ติด ❌',
@@ -1237,22 +1341,11 @@ function getQueueListTimestamp(queueList) {
   return Number(queueList?.timestamp || 0);
 }
 
-function getRoundLatestActivityTimestamp(round) {
-  return Math.max(
-    Number(round?.openedTimestamp || 0),
-    Number(round?.priceSetTimestamp || 0),
-    Number(round?.noBuilderAnnouncedTimestamp || 0),
-    Number(round?.closedTimestamp || 0),
-    Number(round?.resultTimestamp || 0),
-    Number(round?.cancelledTimestamp || 0)
-  );
-}
-
 function isRoundInQueueListWindow(round, queueList) {
   const queueListTimestamp = getQueueListTimestamp(queueList);
   if (!queueListTimestamp) return true;
 
-  return getRoundLatestActivityTimestamp(round) >= queueListTimestamp;
+  return Number(round?.openedTimestamp || 0) >= queueListTimestamp;
 }
 
 function readRoundsForQueueList(groupId, queueList) {
@@ -2049,7 +2142,12 @@ async function reserveSlipTransRef(slipData, event, amount) {
   if (!transRef) return false;
 
   if (!mongoConnected || !mongoDb) {
-    return !isSlipTransRefUsed(transRef);
+    if (isSlipTransRefUsed(transRef) || jsonReservedSlipTransRefs.has(transRef)) {
+      return false;
+    }
+
+    jsonReservedSlipTransRefs.add(transRef);
+    return true;
   }
 
   try {
@@ -2070,6 +2168,12 @@ async function reserveSlipTransRef(slipData, event, amount) {
     }
 
     throw error;
+  }
+}
+
+function releaseJsonSlipTransRefReservation(transRef) {
+  if (transRef && (!mongoConnected || !mongoDb)) {
+    jsonReservedSlipTransRefs.delete(transRef);
   }
 }
 
@@ -2682,6 +2786,10 @@ function buildPairSuccessText(wound, viewerUserId) {
   ].join('\n');
 }
 
+function isLineMonthlyLimitError(status, errorText) {
+  return status === 429 && /monthly limit/i.test(String(errorText || ''));
+}
+
 function getWoundParticipantName(wound, userId) {
   if (userId === wound.openerUserId) return normalizeDisplayName(wound.openerDisplayName) || 'ผู้เปิด';
   if (userId === wound.accepterUserId) return normalizeDisplayName(wound.accepterDisplayName) || 'ผู้รับ';
@@ -2991,6 +3099,8 @@ async function handleSlipCreditEvent(event) {
   if (event.type !== 'message' || event.message?.type !== 'image' || event.source?.type !== 'user' || !event.source?.userId) {
     return null;
   }
+  let reservedSlipTransRef = '';
+  let creditAddedFromReservedSlip = false;
 
   if (!event.message?.id) {
     return {
@@ -3036,6 +3146,7 @@ async function handleSlipCreditEvent(event) {
         replyMessages: [buildSlipStatusText('สลิปนี้ถูกใช้แล้ว ไม่สามารถเติมเครดิตซ้ำได้')]
       };
     }
+    reservedSlipTransRef = slipTransRef;
 
     const result = addCreditForUser(event, amount, 'EasySlip verified bank slip', {
       id: `${slipTransRef}:slip`,
@@ -3046,6 +3157,7 @@ async function handleSlipCreditEvent(event) {
       slipSenderBank: slipData?.rawSlip?.sender?.bank?.short || slipData?.sender?.bank?.short || '',
       slipReceiverBank: slipData?.rawSlip?.receiver?.bank?.short || slipData?.receiver?.bank?.short || ''
     });
+    creditAddedFromReservedSlip = true;
     const snapshot = getCreditSnapshot(event.source.userId);
 
     return {
@@ -3070,6 +3182,10 @@ async function handleSlipCreditEvent(event) {
       slipErrorCode: error.code || '',
       replyMessages: [buildSlipStatusText(message)]
     };
+  } finally {
+    if (reservedSlipTransRef && !creditAddedFromReservedSlip) {
+      releaseJsonSlipTransRefReservation(reservedSlipTransRef);
+    }
   }
 }
 
@@ -3102,6 +3218,10 @@ async function pushToLine(to, messages, options = {}) {
   if (!LINE_CHANNEL_ACCESS_TOKEN || !to || messages.length === 0) {
     return null;
   }
+  if (linePushMonthlyLimitReached) {
+    console.error('LINE push skipped: monthly push/message limit already reached for this process.');
+    return null;
+  }
 
   const lineMessages = messages.slice(0, 5).map(toLineMessage);
   const response = await fetch(`${LINE_MESSAGING_API_URL}/v2/bot/message/push`, {
@@ -3119,6 +3239,10 @@ async function pushToLine(to, messages, options = {}) {
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
     console.error(`LINE push failed: ${response.status} ${errorText}`);
+    if (isLineMonthlyLimitError(response.status, errorText)) {
+      linePushMonthlyLimitReached = true;
+      return response;
+    }
     if (options.splitRetry !== false && lineMessages.length > 1) {
       for (const message of lineMessages) {
         await pushToLine(to, [message], { splitRetry: false });
@@ -3127,21 +3251,6 @@ async function pushToLine(to, messages, options = {}) {
   }
 
   return response;
-}
-
-async function pushMessagesInOrderToLine(to, messages) {
-  const results = [];
-
-  for (const message of messages) {
-    try {
-      results.push(await pushToLine(to, [message], { splitRetry: false }));
-    } catch (error) {
-      console.error(`LINE push failed before response: ${error.message}`);
-      results.push(null);
-    }
-  }
-
-  return results;
 }
 
 async function broadcastToLine(messages) {
@@ -3207,30 +3316,14 @@ async function runScheduledBroadcasts(now = new Date()) {
     if (dueSchedules.length === 0) return;
 
     const timestamp = now.getTime();
-    const dueScheduleIds = new Set(dueSchedules.map((schedule) => schedule.id));
-    const nextSchedules = settings.schedules.map((schedule) => {
-      if (!dueScheduleIds.has(schedule.id)) return schedule;
-
-      return {
-        ...schedule,
-        lastSentDate: localParts.dateKey,
-        lastSentTimestamp: timestamp,
-        lastSentTime: formatDate(timestamp),
-        updatedTimestamp: timestamp
-      };
-    });
-
-    writeBroadcastSettings({
-      ...settings,
-      schedules: nextSchedules,
-      updatedTimestamp: timestamp,
-      updatedTime: formatDate(timestamp)
-    });
-
+    const sentScheduleIds = new Set();
     const logs = readLogs();
     for (const schedule of dueSchedules) {
       const response = await broadcastToLine([sharedMessageText]).catch(() => null);
       const broadcastStatus = response ? (response.ok ? 'sent' : 'failed') : 'skipped';
+      if (broadcastStatus === 'sent') {
+        sentScheduleIds.add(schedule.id);
+      }
       logs.unshift({
         eventType: 'scheduled_broadcast_sent',
         sourceType: 'web_admin',
@@ -3245,6 +3338,26 @@ async function runScheduledBroadcasts(now = new Date()) {
         broadcastScheduledTime: schedule.scheduledTime,
         broadcastDelivery: 'broadcast',
         broadcastPushStatus: broadcastStatus
+      });
+    }
+    if (sentScheduleIds.size > 0) {
+      const nextSchedules = settings.schedules.map((schedule) => {
+        if (!sentScheduleIds.has(schedule.id)) return schedule;
+
+        return {
+          ...schedule,
+          lastSentDate: localParts.dateKey,
+          lastSentTimestamp: timestamp,
+          lastSentTime: formatDate(timestamp),
+          updatedTimestamp: timestamp
+        };
+      });
+
+      writeBroadcastSettings({
+        ...settings,
+        schedules: nextSchedules,
+        updatedTimestamp: timestamp,
+        updatedTime: formatDate(timestamp)
       });
     }
     writeLogs(logs);
@@ -3517,7 +3630,16 @@ function upsertAdminFromEvent(event) {
     userId: source.userId,
     adminKeyword: ADMIN_KEYWORD,
     timestamp: nowTimestamp,
-    time: formatDate(nowTimestamp)
+    time: formatDate(nowTimestamp),
+    replyTexts: [
+      [
+        `เริ่มการผูกกลุ่ม: ${adminCommand.groupName}`,
+        `ลำดับแอดมิน: ${adminCommand.priority}`,
+        '',
+        'ขั้นตอนต่อไป ให้เข้าไปในกลุ่ม LINE ที่ต้องการผูก แล้วพิมพ์:',
+        `ผูกกลุ่ม : ${adminCommand.groupName}`
+      ].join('\n')
+    ]
   };
 
   if (existingIndex >= 0) {
@@ -4460,7 +4582,18 @@ function handleQueueListMessage(event) {
   }
 
   const queueList = parseQueueListMessage(getMessageText(event));
-  if (!queueList) return null;
+  if (!queueList) {
+    const rawText = getMessageText(event);
+    if (!looksLikeQueueListAttempt(rawText)) return null;
+
+    return {
+      type: 'queue_list_failed',
+      saved: false,
+      error: 'missing_keyword',
+      rawText,
+      replyTexts: [buildQueueListErrorReply('missing_keyword')]
+    };
+  }
   if (queueList.error) {
     return {
       type: 'queue_list_failed',
@@ -4922,6 +5055,11 @@ app.post(
             logEntry.adminRegistered = true;
             logEntry.adminGroupName = adminEntry.groupName;
             logEntry.adminPriority = adminEntry.priority;
+            logEntry.adminReplyTexts = Array.isArray(adminEntry.replyTexts) ? adminEntry.replyTexts : [];
+
+            if (Array.isArray(adminEntry.replyTexts) && adminEntry.replyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, adminEntry.replyTexts));
+            }
           }
 
           if (removedAdminEntry) {
@@ -5088,7 +5226,7 @@ app.post(
             );
 
             for (const notification of woundAction.privateNotifications || []) {
-              replyJobs.push(pushMessagesInOrderToLine(notification.to, notification.messages));
+              replyJobs.push(pushToLine(notification.to, notification.messages));
             }
           }
 
@@ -5181,7 +5319,15 @@ app.post(
       }
 
       if (replyJobs.length > 0) {
-        await Promise.allSettled(replyJobs);
+        const replyJobResults = Promise.allSettled(replyJobs).then((results) => {
+          const rejectedCount = results.filter((result) => result.status === 'rejected').length;
+          if (rejectedCount > 0) {
+            console.error(`LINE reply/push background jobs failed: ${rejectedCount}`);
+          }
+        });
+        if (process.env.NODE_ENV === 'test') {
+          await replyJobResults;
+        }
       }
     } catch (error) {
       console.error('Webhook payload could not be processed:', error.message);
@@ -5268,7 +5414,7 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-app.get('/logs', (req, res) => {
+app.get('/logs', requireCreditsAdminAuth, (req, res) => {
   const logs = readLogs();
   const rows = logs
     .map(
@@ -5424,7 +5570,7 @@ app.get('/logs', (req, res) => {
 </html>`);
 });
 
-app.get('/admins', (req, res) => {
+app.get('/admins', requireCreditsAdminAuth, (req, res) => {
   const admins = readAdmins();
   const rows = admins
     .map(
@@ -5589,7 +5735,7 @@ app.get('/admins', (req, res) => {
 </html>`);
 });
 
-app.get('/wounds', (req, res) => {
+app.get('/wounds', requireCreditsAdminAuth, (req, res) => {
   const wounds = readWounds();
   const rows = wounds
     .map(
@@ -5761,7 +5907,7 @@ app.get('/wounds', (req, res) => {
 </html>`);
 });
 
-app.get('/rounds', (req, res) => {
+app.get('/rounds', requireCreditsAdminAuth, (req, res) => {
   const rounds = readRounds();
   const rows = rounds
     .map(
@@ -5907,7 +6053,7 @@ app.get('/rounds', (req, res) => {
 </html>`);
 });
 
-app.get('/queue-lists', (req, res) => {
+app.get('/queue-lists', requireCreditsAdminAuth, (req, res) => {
   const queueLists = readQueueLists();
   const rows = queueLists
     .map((queueList) => {
@@ -6531,11 +6677,15 @@ app.get('/credits/login', (req, res) => {
 });
 
 app.post('/credits/login', (req, res) => {
+  if (!isCreditsAdminConfigured()) {
+    return res.status(503).send('Admin login is not configured. Set CREDITS_ADMIN_USERNAME, CREDITS_ADMIN_PASSWORD, and CREDITS_ADMIN_SESSION_SECRET.');
+  }
+
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
 
   if (username === CREDITS_ADMIN_USERNAME && password === CREDITS_ADMIN_PASSWORD) {
-    setCreditsAdminCookie(res);
+    setCreditsAdminCookie(req, res);
     return res.redirect('/credits');
   }
 
@@ -6543,7 +6693,7 @@ app.post('/credits/login', (req, res) => {
 });
 
 app.post('/credits/logout', (req, res) => {
-  clearCreditsAdminCookie(res);
+  clearCreditsAdminCookie(req, res);
   res.redirect('/credits/login');
 });
 
@@ -6552,6 +6702,10 @@ app.get('/withdraw/request', async (req, res) => {
   const tokenData = parseWithdrawalRequestToken(token);
   if (!tokenData) {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  if (!WITHDRAWAL_TIME_CHECK_DISABLED && !isWithdrawalRequestOpen()) {
+    return res.status(403).send('ยังไม่ถึงเวลาถอนเครดิต เปิดถอนตั้งแต่ 18:00 ถึง 08:00 น. ครับ');
   }
 
   if (isUserBlacklistedAnywhere(tokenData.userId)) {
@@ -6685,6 +6839,10 @@ app.post('/withdraw/request', async (req, res) => {
   const tokenData = parseWithdrawalRequestToken(token);
   if (!tokenData) {
     return res.status(400).send('ลิงก์ถอนเครดิตไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  if (!WITHDRAWAL_TIME_CHECK_DISABLED && !isWithdrawalRequestOpen()) {
+    return res.status(403).send('ยังไม่ถึงเวลาถอนเครดิต เปิดถอนตั้งแต่ 18:00 ถึง 08:00 น. ครับ');
   }
 
   if (isUserBlacklistedAnywhere(tokenData.userId)) {
@@ -7460,63 +7618,63 @@ app.post('/withdrawals/:withdrawalId/cancel', requireCreditsAdminAuth, async (re
   return res.redirect('/withdrawals');
 });
 
-app.get('/api/logs', (req, res) => {
+app.get('/api/logs', requireCreditsAdminAuth, (req, res) => {
   res.json(readLogs());
 });
 
-app.get('/api/storage', (req, res) => {
+app.get('/api/storage', requireCreditsAdminAuth, (req, res) => {
   res.json(getStorageStatus());
 });
 
-app.delete('/api/logs', (req, res) => {
+app.delete('/api/logs', requireCreditsAdminAuth, (req, res) => {
   writeLogs([]);
   res.json({ success: true });
 });
 
-app.get('/api/admins', (req, res) => {
+app.get('/api/admins', requireCreditsAdminAuth, (req, res) => {
   res.json(readAdmins());
 });
 
-app.delete('/api/admins', (req, res) => {
+app.delete('/api/admins', requireCreditsAdminAuth, (req, res) => {
   writeAdmins([]);
   res.json({ success: true });
 });
 
-app.get('/api/wounds', (req, res) => {
+app.get('/api/wounds', requireCreditsAdminAuth, (req, res) => {
   res.json(readWounds());
 });
 
-app.delete('/api/wounds', (req, res) => {
+app.delete('/api/wounds', requireCreditsAdminAuth, (req, res) => {
   writeWounds([]);
   writeMessages([]);
   res.json({ success: true });
 });
 
-app.get('/api/rounds', (req, res) => {
+app.get('/api/rounds', requireCreditsAdminAuth, (req, res) => {
   res.json(readRounds());
 });
 
-app.delete('/api/rounds', (req, res) => {
+app.delete('/api/rounds', requireCreditsAdminAuth, (req, res) => {
   writeRounds([]);
   writeMessages([]);
   writeWounds([]);
   res.json({ success: true });
 });
 
-app.get('/api/queue-lists', (req, res) => {
+app.get('/api/queue-lists', requireCreditsAdminAuth, (req, res) => {
   res.json(readQueueLists());
 });
 
-app.delete('/api/queue-lists', (req, res) => {
+app.delete('/api/queue-lists', requireCreditsAdminAuth, (req, res) => {
   writeQueueLists([]);
   res.json({ success: true });
 });
 
-app.get('/api/blacklist', (req, res) => {
+app.get('/api/blacklist', requireCreditsAdminAuth, (req, res) => {
   res.json(readBlacklist());
 });
 
-app.delete('/api/blacklist', (req, res) => {
+app.delete('/api/blacklist', requireCreditsAdminAuth, (req, res) => {
   writeBlacklist([]);
   writeBlacklistModes([]);
   res.json({ success: true });
@@ -7526,12 +7684,12 @@ app.get('/api/broadcast-settings', requireCreditsAdminAuth, (req, res) => {
   res.json(readBroadcastSettings());
 });
 
-app.delete('/api/broadcast-settings', (req, res) => {
+app.delete('/api/broadcast-settings', requireCreditsAdminAuth, (req, res) => {
   writeBroadcastSettings({ inviteText: '', schedules: [] });
   res.json({ success: true });
 });
 
-app.get('/api/credits', (req, res) => {
+app.get('/api/credits', requireCreditsAdminAuth, (req, res) => {
   res.json(readCredits());
 });
 
@@ -7604,7 +7762,7 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
   });
 });
 
-app.delete('/api/credits', (req, res) => {
+app.delete('/api/credits', requireCreditsAdminAuth, (req, res) => {
   writeCredits([]);
   res.json({ success: true });
 });

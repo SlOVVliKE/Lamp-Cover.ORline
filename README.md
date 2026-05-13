@@ -253,20 +253,15 @@ Open the mobile-friendly credit admin page:
 https://your-render-app.onrender.com/credits
 ```
 
-Default login:
-
-```text
-Username: Admin
-Password: admin123
-```
-
-You can override these values on Render:
+Set these environment variables before using the admin page:
 
 ```text
 CREDITS_ADMIN_USERNAME=Admin
-CREDITS_ADMIN_PASSWORD=admin123
-CREDITS_ADMIN_SESSION_SECRET=change_this_secret
+CREDITS_ADMIN_PASSWORD=change_this_password
+CREDITS_ADMIN_SESSION_SECRET=change_this_long_random_secret
 ```
+
+For safety, production will not enable the old default `Admin/admin123` login unless you explicitly set `ALLOW_DEFAULT_CREDITS_ADMIN=true`. Do not use that fallback for real deployment.
 
 The page shows LINE display names, profile pictures when available, each user's current balance, and a name search box instead of raw user IDs. It lets an admin manually add credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a top-up card to that user.
 
@@ -384,7 +379,7 @@ This compact numbered format is also supported even when there is no title line:
 ข้อความท้ายคิวหรือชื่องาน
 ```
 
-If the bot cannot find any queue names, it replies `คิวไม่ติด ❌` with the exact problem and an example of how to fix the format.
+If the bot sees an explicit queue-list command but cannot find any queue names, or the first line contains queue intent such as `คิว...` but is missing the required keyword, it replies `คิวไม่ติด ❌` with the exact problem and an example of how to fix the format. A plain numbered list without a bot keyword is ignored so admins can announce queue information to customers without triggering the bot.
 
 Saved queue lists can be viewed at:
 
@@ -556,7 +551,7 @@ The first reply only marks a pending pair. The wound is created only when the or
 
 Split accepts are supported by adding a stake after the accept keyword, such as `ต100`. For example, an opening message with `+5ถ400` can be split into `ต100` and `ต300`; the total active wounds from the same opening message cannot exceed the original 400.
 
-When a wound is created, the bot sends a private Flex card to both users if `LINE_CHANNEL_ACCESS_TOKEN` is set.
+When a wound is created, the bot sends one private push per user with the success text and Flex card in the same request if `LINE_CHANNEL_ACCESS_TOKEN` is set. This reduces LINE push usage while keeping the text-before-card order inside the same message set.
 The card includes `แตะเพื่อยกเลิก`. If one user taps it, the bot sends an approval card to the paired opponent with `ยกเลิก` and `ไม่ยกเลิก` buttons. If the opponent approves, the wound is marked `cancelled` and will not be settled by the queue result.
 
 Settlement rules:

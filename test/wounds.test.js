@@ -80,6 +80,9 @@ async function startServer(envOverrides = {}) {
     env: {
       ...process.env,
       PORT: String(port),
+      NODE_ENV: 'test',
+      ADMIN_API_AUTH_DISABLED: 'true',
+      WITHDRAWAL_TIME_CHECK_DISABLED: 'true',
       LINE_CHANNEL_SECRET: '',
       LINE_OFFICIAL_ACCOUNT_URL: 'https://line.me/R/ti/p/@lamp-cover',
       ADMIN_KEYWORD: 'I AM ADMIN',
@@ -464,7 +467,7 @@ test('pushes a pair success text before the private pair success card', async ()
       confirmPairEvent('Gpair-push-text', 'UpairPushOpen', 'm-pair-push-accept', 'm-pair-push-confirm', 1710000105500)
     ]);
 
-    assert.equal(pushRequests.length, 4);
+    assert.equal(pushRequests.length, 2);
 
     const requestsByTarget = new Map();
     for (const request of pushRequests) {
@@ -475,14 +478,13 @@ test('pushes a pair success text before the private pair success card', async ()
 
     assert.equal(requestsByTarget.size, 2);
     for (const requests of requestsByTarget.values()) {
-      assert.equal(requests.length, 2);
-      assert.equal(requests[0].messages.length, 1);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].messages.length, 2);
       assert.equal(requests[0].messages[0].type, 'text');
       assert.match(requests[0].messages[0].text, /จับคู่สำเร็จ/);
       assert.match(requests[0].messages[0].text, /20\.00/);
-      assert.equal(requests[1].messages.length, 1);
-      assert.equal(requests[1].messages[0].type, 'flex');
-      assert.match(requests[1].messages[0].altText, /จับคู่สำเร็จ/);
+      assert.equal(requests[0].messages[1].type, 'flex');
+      assert.match(requests[0].messages[1].altText, /จับคู่สำเร็จ/);
     }
   } finally {
     await server.stop();
@@ -2812,6 +2814,57 @@ test('saves a numbered queue list without a title and keeps footer as note', asy
   }
 });
 
+test('saves an unnumbered queue list before a note without requiring a blank header split', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      'โดนทองคำ',
+      'น้องมิตร',
+      'กอดเสาเอียง',
+      'เทพศรี',
+      'ข้าวการ',
+      'น้องพี่โกซี่',
+      'มหาเทพ',
+      '',
+      'หมายเหตุ คิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-unnumbered-note', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-unnumbered-note', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-unnumbered-note', text: queueText },
+        timestamp: 1710000090775
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.equal(queueLists[0].title, '');
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      ['โดนทองคำ', 'น้องมิตร', 'กอดเสาเอียง', 'เทพศรี', 'ข้าวการ', 'น้องพี่โกซี่', 'มหาเทพ']
+    );
+    assert.equal(queueLists[0].note, 'หมายเหตุ คิวจุดอาจมีการเปลี่ยนแปลง');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.ok(queueListLog);
+    assert.equal(queueListLog.queueListItemCount, 7);
+    assert.match(queueListLog.queueListReplyTexts[0], /^คิวจุด✅\n\nโดนทองคำ\nน้องมิตร/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('replies with queue list guidance when queue list cannot be parsed', async () => {
   const server = await startServer();
 
@@ -2842,6 +2895,79 @@ test('replies with queue list guidance when queue list cannot be parsed', async 
     assert.match(failedLog.queueListReplyTexts[0], /คิวไม่ติด/);
     assert.match(failedLog.queueListReplyTexts[0], /ยังไม่เจอรายชื่อคิว/);
     assert.match(failedLog.queueListReplyTexts[0], /1\.ชื่อคิว/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('ignores numbered queue announcements without a bot queue keyword', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-missing-keyword', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-missing-keyword', userId: 'Uadmin' },
+        message: {
+          type: 'text',
+          id: 'm-queue-missing-keyword',
+          text: ['รายการวันนี้', '1.แอ็ดเทวดา', '2.ศ.ราชวงศ์', '3.ส.พรพิมล'].join('\n')
+        },
+        timestamp: 1710000090810
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.queueListSaved), false);
+    assert.equal(logs.some((log) => log.queueListFailed), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('replies with queue list guidance when a queue-intent message is missing the exact keyword', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-intent-missing-keyword', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-intent-missing-keyword', userId: 'Uadmin' },
+        message: {
+          type: 'text',
+          id: 'm-queue-intent-missing-keyword',
+          text: ['คิววันนี้', '1.แอ็ดเทวดา', '2.ศ.ราชวงศ์', '3.ส.พรพิมล'].join('\n')
+        },
+        timestamp: 1710000090811
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const failedLog = logs.find((log) => log.queueListFailed);
+    assert.ok(failedLog);
+    assert.equal(failedLog.queueListSaved, false);
+    assert.equal(failedLog.queueListError, 'missing_keyword');
+    assert.match(failedLog.queueListReplyTexts[0], /คิวไม่ติด/);
+    assert.match(failedLog.queueListReplyTexts[0], /ขาดคำขึ้นต้น/);
+    assert.match(failedLog.queueListReplyTexts[0], /คิวจุดรายการ/);
   } finally {
     await server.stop();
   }
@@ -3377,7 +3503,17 @@ test('replies when a group is bound successfully', async () => {
 
     const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     const bindLog = logs.find((log) => log.groupBindRequested);
+    const adminLog = logs.find((log) => log.adminRegistered);
 
+    assert.deepEqual(adminLog.adminReplyTexts, [
+      [
+        'เริ่มการผูกกลุ่ม: ทดสอบ',
+        'ลำดับแอดมิน: 1',
+        '',
+        'ขั้นตอนต่อไป ให้เข้าไปในกลุ่ม LINE ที่ต้องการผูก แล้วพิมพ์:',
+        'ผูกกลุ่ม : ทดสอบ'
+      ].join('\n')
+    ]);
     assert.equal(bindLog.groupBindSuccess, true);
     assert.equal(bindLog.boundGroupName, 'ทดสอบ');
     assert.deepEqual(bindLog.groupBindReplyTexts, [
@@ -4317,6 +4453,94 @@ test('adds private chat credit from EasySlip verified image slips and rejects du
     assert.equal(successLog.creditAmount, 1250);
     assert.match(successTexts, /1,250\.00/);
     assert.match(duplicateTexts, /สลิปนี้ถูกใช้แล้ว/);
+  } finally {
+    await server.stop();
+    await lineContentServer.stop();
+    await easySlipServer.stop();
+  }
+});
+
+test('rejects concurrent duplicate slip credits when JSON storage is used', async () => {
+  const slipImage = Buffer.from('same-slip-image');
+  let easySlipCallCount = 0;
+  const pendingEasySlipResponses = [];
+
+  const lineContentServer = await startHttpMock((req, res) => {
+    res.writeHead(200, { 'Content-Type': req.url.includes('/content') ? 'image/jpeg' : 'application/json' });
+    res.end(req.url.includes('/content') ? slipImage : JSON.stringify({ success: true }));
+  });
+
+  const easySlipServer = await startHttpMock(async (req, res) => {
+    await readRequestJson(req);
+    easySlipCallCount += 1;
+    pendingEasySlipResponses.push(res);
+
+    if (pendingEasySlipResponses.length >= 2) {
+      for (const pendingResponse of pendingEasySlipResponses.splice(0)) {
+        pendingResponse.writeHead(200, { 'Content-Type': 'application/json' });
+        pendingResponse.end(
+          JSON.stringify({
+            success: true,
+            status: 200,
+            data: {
+              isDuplicate: false,
+              transRef: 'BBL-RACE-001',
+              rawSlip: {
+                transRef: 'BBL-RACE-001',
+                amount: { amount: 100 },
+                receiver: { bank: { short: 'BBL' }, account: { value: '1234567890' } }
+              }
+            }
+          })
+        );
+      }
+    }
+  });
+
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_CONTENT_API_BASE_URL: lineContentServer.baseUrl,
+    LINE_MESSAGING_API_BASE_URL: lineContentServer.baseUrl,
+    EASYSLIP_API_KEY: 'easy-token',
+    EASYSLIP_API_BASE_URL: easySlipServer.baseUrl
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await Promise.all([
+      postWebhook(server.baseUrl, [
+        {
+          type: 'message',
+          source: { type: 'user', userId: 'UslipRace' },
+          replyToken: 'reply-slip-race-one',
+          message: { type: 'image', id: 'm-slip-race-one' },
+          timestamp: 1710000005000
+        }
+      ]),
+      postWebhook(server.baseUrl, [
+        {
+          type: 'message',
+          source: { type: 'user', userId: 'UslipRace' },
+          replyToken: 'reply-slip-race-two',
+          message: { type: 'image', id: 'm-slip-race-two' },
+          timestamp: 1710000005001
+        }
+      ])
+    ]);
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const credit = credits.find((row) => row.userId === 'UslipRace');
+    assert.equal(credit.balance, 100);
+    assert.equal(credit.totalAdded, 100);
+    assert.equal(credit.transactions.length, 1);
+    assert.equal(credit.transactions[0].slipTransRef, 'BBL-RACE-001');
+    assert.equal(easySlipCallCount, 2);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.filter((log) => log.creditAction === 'slip_credit_added').length, 1);
+    assert.equal(logs.filter((log) => log.creditAction === 'slip_duplicate').length, 1);
   } finally {
     await server.stop();
     await lineContentServer.stop();
