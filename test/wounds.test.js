@@ -4032,6 +4032,98 @@ test('scheduled broadcast sends the shared invite message once for the current d
   }
 });
 
+test('uses the same saved invite message for rich menu button and scheduled broadcast', async () => {
+  const broadcastRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const body = await readRequestJson(req);
+    if (req.url === '/v2/bot/message/broadcast') {
+      broadcastRequests.push(body);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl,
+    BROADCAST_SCHEDULER_INTERVAL_MS: '50'
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/broadcast-settings');
+
+    const login = await fetch(`${server.baseUrl}/credits/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'Admin', password: 'admin123' }),
+      redirect: 'manual'
+    });
+    const cookie = login.headers.get('set-cookie') || '';
+    const inviteText = [
+      'ข้อความเข้ากลุ่มจากหน้าตั้งค่า',
+      'กลุ่ม1 บ้านคุ้ม',
+      'https://line.me/ti/g/shared-button'
+    ].join('\n');
+    const scheduledTime = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Bangkok',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(new Date());
+
+    const saveInvite = await fetch(`${server.baseUrl}/broadcasts/invite`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        cookie
+      },
+      body: new URLSearchParams({ inviteText }),
+      redirect: 'manual'
+    });
+    assert.equal(saveInvite.status, 302);
+
+    const createSchedule = await fetch(`${server.baseUrl}/broadcasts/schedules`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        cookie
+      },
+      body: new URLSearchParams({
+        title: 'ใช้ข้อความเดียวกัน',
+        scheduledTime,
+        enabled: 'on'
+      }),
+      redirect: 'manual'
+    });
+    assert.equal(createSchedule.status, 302);
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'postback',
+        source: { type: 'user', userId: 'UsharedInviteButton' },
+        replyToken: 'reply-shared-invite-button',
+        postback: { data: 'action=join_group' },
+        timestamp: 1710000082750
+      }
+    ]);
+
+    await waitForCondition(() => broadcastRequests.length > 0, 1200, 30);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const inviteLog = logs.find((log) => log.betGroupInviteRequested);
+
+    assert.ok(inviteLog);
+    assert.equal(inviteLog.betGroupInviteReplyTexts[0], inviteText);
+    assert.equal(broadcastRequests.length, 1);
+    assert.equal(broadcastRequests[0].messages[0].type, 'text');
+    assert.equal(broadcastRequests[0].messages[0].text, inviteText);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('ignores private chat C+ credit commands because credit requires a verified slip', async () => {
   const server = await startServer();
 

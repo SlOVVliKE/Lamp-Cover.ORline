@@ -1498,16 +1498,38 @@ function parseBetGroupInviteKeyword(message) {
   return ['เข้ากลุ่มแทง', 'กลุ่มแทง'].includes(text);
 }
 
+function isBetGroupInviteAction(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (parseBetGroupInviteKeyword(text)) return true;
+
+  const normalizedAction = text.toLowerCase().replace(/[-\s]+/g, '_');
+  return [
+    'bet_group_invite',
+    'betgroupinvite',
+    'join_group',
+    'join_bet_group',
+    'bet_group',
+    'group_invite',
+    'invite_group'
+  ].includes(normalizedAction);
+}
+
 function parseBetGroupInvitePostbackData(data) {
   const rawData = String(data || '').trim();
   if (!rawData) return false;
-  if (parseBetGroupInviteKeyword(rawData)) return true;
+  if (isBetGroupInviteAction(rawData)) return true;
 
   const params = new URLSearchParams(rawData);
-  const action = String(params.get('action') || params.get('type') || '').trim().toLowerCase();
-  const normalizedAction = action.replace(/[-\s]+/g, '_');
-
-  return ['bet_group_invite', 'betgroupinvite'].includes(normalizedAction);
+  return [
+    params.get('action'),
+    params.get('type'),
+    params.get('menu'),
+    params.get('keyword'),
+    params.get('text'),
+    params.get('label'),
+    params.get('message')
+  ].some(isBetGroupInviteAction);
 }
 
 function parseGroupAdminLookupKeyword(message) {
@@ -3163,7 +3185,7 @@ async function runScheduledBroadcasts(now = new Date()) {
   broadcastSchedulerRunning = true;
   try {
     const settings = readBroadcastSettings();
-    const sharedMessageText = settings.inviteText || BET_GROUP_INVITE_TEXT;
+    const sharedMessageText = getBetGroupInviteText();
     const localParts = getBroadcastLocalParts(now);
     const dueSchedules = settings.schedules.filter((schedule) => (
       schedule.enabled &&
