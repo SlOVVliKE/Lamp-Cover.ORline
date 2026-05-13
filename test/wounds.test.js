@@ -464,14 +464,25 @@ test('pushes a pair success text before the private pair success card', async ()
       confirmPairEvent('Gpair-push-text', 'UpairPushOpen', 'm-pair-push-accept', 'm-pair-push-confirm', 1710000105500)
     ]);
 
-    assert.equal(pushRequests.length, 2);
+    assert.equal(pushRequests.length, 4);
 
+    const requestsByTarget = new Map();
     for (const request of pushRequests) {
-      assert.equal(request.messages[0].type, 'text');
-      assert.match(request.messages[0].text, /จับคู่สำเร็จ/);
-      assert.match(request.messages[0].text, /20\.00/);
-      assert.equal(request.messages[1].type, 'flex');
-      assert.match(request.messages[1].altText, /จับคู่สำเร็จ/);
+      const list = requestsByTarget.get(request.to) || [];
+      list.push(request);
+      requestsByTarget.set(request.to, list);
+    }
+
+    assert.equal(requestsByTarget.size, 2);
+    for (const requests of requestsByTarget.values()) {
+      assert.equal(requests.length, 2);
+      assert.equal(requests[0].messages.length, 1);
+      assert.equal(requests[0].messages[0].type, 'text');
+      assert.match(requests[0].messages[0].text, /จับคู่สำเร็จ/);
+      assert.match(requests[0].messages[0].text, /20\.00/);
+      assert.equal(requests[1].messages.length, 1);
+      assert.equal(requests[1].messages[0].type, 'flex');
+      assert.match(requests[1].messages[0].altText, /จับคู่สำเร็จ/);
     }
   } finally {
     await server.stop();
@@ -479,7 +490,7 @@ test('pushes a pair success text before the private pair success card', async ()
   }
 });
 
-test('retries the pair success text separately when the private flex push fails', async () => {
+test('keeps the pair success text sent when the private flex push fails', async () => {
   const pushRequests = [];
   const lineServer = await startHttpMock(async (req, res) => {
     const body = await readRequestJson(req);

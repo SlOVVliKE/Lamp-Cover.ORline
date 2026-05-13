@@ -3129,6 +3129,21 @@ async function pushToLine(to, messages, options = {}) {
   return response;
 }
 
+async function pushMessagesInOrderToLine(to, messages) {
+  const results = [];
+
+  for (const message of messages) {
+    try {
+      results.push(await pushToLine(to, [message], { splitRetry: false }));
+    } catch (error) {
+      console.error(`LINE push failed before response: ${error.message}`);
+      results.push(null);
+    }
+  }
+
+  return results;
+}
+
 async function broadcastToLine(messages) {
   if (!LINE_CHANNEL_ACCESS_TOKEN || messages.length === 0) {
     return null;
@@ -5073,7 +5088,7 @@ app.post(
             );
 
             for (const notification of woundAction.privateNotifications || []) {
-              replyJobs.push(pushToLine(notification.to, notification.messages));
+              replyJobs.push(pushMessagesInOrderToLine(notification.to, notification.messages));
             }
           }
 
