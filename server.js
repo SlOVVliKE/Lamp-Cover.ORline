@@ -2238,6 +2238,37 @@ function getRequiredCreditFromTrade(trade) {
   return roundPoints(amount * reserveMultiplier);
 }
 
+function buildWoundRejectedReplyTexts(action) {
+  if (!action || action.type !== 'wound_rejected') return [];
+
+  if (action.reason === 'insufficient_credit') {
+    const requiredCredit = formatPoints(action.requiredCredit || 0);
+    const openerAvailableCredit =
+      typeof action.openerAvailableCredit === 'number' ? formatPoints(action.openerAvailableCredit) : '-';
+    const accepterAvailableCredit =
+      typeof action.accepterAvailableCredit === 'number' ? formatPoints(action.accepterAvailableCredit) : '-';
+    const fallbackNote = action.fallbackNoBuilder
+      ? '\nหมายเหตุ: คำสั่ง ชตย ต้องกันเครดิต 2 เท่าของยอดแทง'
+      : '';
+
+    return [
+      `แผลไม่ติด ❌\n\nสาเหตุ: เครดิตที่ถอนได้ไม่พอสำหรับกันแผลนี้\nยอดที่ต้องกัน: ${requiredCredit} ต่อคน\nคนเปิดเหลือ: ${openerAvailableCredit}\nคนตอบเหลือ: ${accepterAvailableCredit}${fallbackNote}`
+    ];
+  }
+
+  if (action.reason === 'amount_exceeds_remaining') {
+    return [
+      `แผลไม่ติด ❌\n\nสาเหตุ: ยอดที่ตอบเกินยอดที่เหลือ\nยอดที่เหลือ: ${formatPoints(action.remainingStake || 0)}`
+    ];
+  }
+
+  if (action.reason === 'already_paired') {
+    return ['แผลไม่ติด ❌\n\nสาเหตุ: คู่นี้ติดแผลนี้ไปแล้วครับ'];
+  }
+
+  return [];
+}
+
 function getPredictionLabels(side) {
   if (side === 'chang_dai') {
     return {
@@ -4312,7 +4343,8 @@ async function createWoundFromReply(event) {
         accepterUserId: source.userId || '',
         requiredCredit: acceptedTrade.requiredCredit,
         remainingStake: acceptedTrade.remainingStake,
-        existingWoundId: acceptedTrade.existingWoundId
+        existingWoundId: acceptedTrade.existingWoundId,
+        fallbackNoBuilder: acceptFallbackNoBuilder || Boolean(quotedMessage.trade?.fallbackNoBuilder)
       };
     }
 
@@ -4376,7 +4408,8 @@ async function createWoundFromReply(event) {
       accepterUserId: pairIntent.accepterUserId,
       requiredCredit: acceptedTrade.requiredCredit,
       remainingStake: acceptedTrade.remainingStake,
-      existingWoundId: acceptedTrade.existingWoundId
+      existingWoundId: acceptedTrade.existingWoundId,
+      fallbackNoBuilder
     };
   }
 
@@ -4404,7 +4437,8 @@ async function createWoundFromReply(event) {
       requiredCredit,
       openerAvailableCredit: openerSnapshot.withdrawableBalance,
       accepterAvailableCredit: accepterSnapshot.withdrawableBalance,
-      insufficientCreditUsers
+      insufficientCreditUsers,
+      fallbackNoBuilder
     };
   }
 
@@ -5309,6 +5343,11 @@ app.post(
             logEntry.accepterAvailableCredit = woundAction.accepterAvailableCredit;
             logEntry.insufficientCreditUsers = woundAction.insufficientCreditUsers || [];
             logEntry.existingWoundId = woundAction.existingWoundId || '';
+            logEntry.woundRejectedReplyTexts = buildWoundRejectedReplyTexts(woundAction);
+
+            if (logEntry.woundRejectedReplyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, logEntry.woundRejectedReplyTexts));
+            }
           }
 
           if (trackedMessage?.trade) {

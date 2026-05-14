@@ -5798,6 +5798,108 @@ test('allows split accepts on the same trade until available credit runs out', a
   }
 });
 
+test('replies why a second ชตย wound is rejected when reserved credit is too low', async () => {
+  const replyRequests = [];
+  const lineServer = await startHttpMock(async (req, res) => {
+    const body = await readRequestJson(req);
+    if (req.url === '/v2/bot/message/reply') {
+      replyRequests.push(body);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+  });
+  const server = await startServer({
+    LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+    LINE_MESSAGING_API_BASE_URL: lineServer.baseUrl
+  });
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gfallback-reserve');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UfallbackReserveOpener', 500, 'm-credit-fallback-reserve-opener', 1710000051000),
+      creditEvent('UfallbackReserveAccepter', 500, 'm-credit-fallback-reserve-accepter', 1710000051001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-fallback-reserve-open-round', text: 'เปิด ทดสอบ' },
+        timestamp: 1710000051100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'UfallbackReserveOpener' },
+        message: { type: 'text', id: 'm-fallback-reserve-trade-one', text: '330-360ล200ชตย' },
+        timestamp: 1710000051200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'UfallbackReserveAccepter' },
+        message: { type: 'text', id: 'm-fallback-reserve-accept-one', quotedMessageId: 'm-fallback-reserve-trade-one', text: 'ต' },
+        timestamp: 1710000051300
+      },
+      confirmPairEvent('Gfallback-reserve', 'UfallbackReserveOpener', 'm-fallback-reserve-accept-one', 'm-fallback-reserve-confirm-one', 1710000051400),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'UfallbackReserveOpener' },
+        message: { type: 'text', id: 'm-fallback-reserve-trade-two', text: '350ล100ชตย' },
+        timestamp: 1710000051500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'UfallbackReserveAccepter' },
+        message: { type: 'text', id: 'm-fallback-reserve-accept-two', quotedMessageId: 'm-fallback-reserve-trade-two', text: 'ต' },
+        timestamp: 1710000051600
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gfallback-reserve', userId: 'UfallbackReserveOpener' },
+        replyToken: 'reply-second-fallback-reject',
+        message: { type: 'text', id: 'm-fallback-reserve-confirm-two', quotedMessageId: 'm-fallback-reserve-accept-two', text: 'ต' },
+        timestamp: 1710000051700
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].openMessageId, 'm-fallback-reserve-trade-one');
+    assert.equal(wounds[0].requiredCredit, 400);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const rejectedLog = logs.find(
+      (log) =>
+        log.openMessageId === 'm-fallback-reserve-trade-two' &&
+        log.woundRejectedReason === 'insufficient_credit'
+    );
+    assert.ok(rejectedLog);
+    assert.equal(rejectedLog.requiredCredit, 200);
+    assert.equal(rejectedLog.openerAvailableCredit, 100);
+    assert.equal(rejectedLog.accepterAvailableCredit, 100);
+    assert.deepEqual(
+      rejectedLog.insufficientCreditUsers.sort(),
+      ['UfallbackReserveAccepter', 'UfallbackReserveOpener'].sort()
+    );
+
+    const rejectReply = replyRequests.find((request) => request.replyToken === 'reply-second-fallback-reject');
+    assert.ok(rejectReply);
+    const replyText = rejectReply.messages?.[0]?.text || '';
+    assert.match(replyText, /แผลไม่ติด/);
+    assert.match(replyText, /เครดิตที่ถอนได้ไม่พอ/);
+    assert.match(replyText, /200\.00/);
+    assert.match(replyText, /100\.00/);
+    assert.match(replyText, /ชตย/);
+  } finally {
+    await server.stop();
+    await lineServer.stop();
+  }
+});
+
 test('allows the same opener trade to pair with multiple accepters when credit remains', async () => {
   const server = await startServer();
 
