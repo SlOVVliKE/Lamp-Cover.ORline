@@ -989,6 +989,11 @@ function isQueueFooterLine(line) {
   return /^📍/.test(String(line || '').trim());
 }
 
+function isQueueNoteLine(line) {
+  const text = String(line || '').trim();
+  return /^หมายเหตุ/.test(text) || /^\*+\s*คิวจุดอาจมีการเปลี่ยนแปลง/.test(text);
+}
+
 function getQueueListKeyword(line) {
   return QUEUE_LIST_KEYWORDS.find((keyword) => line === keyword || line.startsWith(`${keyword} `)) || '';
 }
@@ -1000,7 +1005,7 @@ function parseQueueLookupKeyword(message) {
 function hasQueueItemContentAfterBlank(lines, blankIndex) {
   for (const line of lines.slice(blankIndex + 1)) {
     if (!line || isQueueSeparatorLine(line)) continue;
-    if (/^หมายเหตุ/.test(line) || isQueueFooterLine(line)) return false;
+    if (isQueueNoteLine(line) || isQueueFooterLine(line)) return false;
     return true;
   }
 
@@ -1058,7 +1063,7 @@ function parseQueueListMessage(message) {
       continue;
     }
     if (isQueueSeparatorLine(line)) continue;
-    if (/^หมายเหตุ/.test(line)) {
+    if (isQueueNoteLine(line)) {
       note = line;
       break;
     }

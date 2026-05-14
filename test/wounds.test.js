@@ -2865,6 +2865,62 @@ test('saves an unnumbered queue list before a note without requiring a blank hea
   }
 });
 
+test('saves an unnumbered queue list before an asterisk queue-change note', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      'โชคประชาวัน 385✅✅',
+      'แหลมเจริญ 395✅✅',
+      'จอมอภิหาร 305❌❌',
+      'สายน้ำเกลือ 355✅✅',
+      'น้องเมษา 290❌❌',
+      'เพชรวารี 710 ชมต 410✅',
+      '',
+      '*คิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-asterisk-note', 'Uadmin', 'ทดสอบ');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-asterisk-note', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-asterisk-note', text: queueText },
+        timestamp: 1710000090785
+      }
+    ]);
+
+    const queueLists = await (await fetch(`${server.baseUrl}/api/queue-lists`)).json();
+    assert.equal(queueLists.length, 1);
+    assert.deepEqual(
+      queueLists[0].items.map((item) => item.name),
+      [
+        'โชคประชาวัน 385✅✅',
+        'แหลมเจริญ 395✅✅',
+        'จอมอภิหาร 305❌❌',
+        'สายน้ำเกลือ 355✅✅',
+        'น้องเมษา 290❌❌',
+        'เพชรวารี 710 ชมต 410✅'
+      ]
+    );
+    assert.equal(queueLists[0].note, '*คิวจุดอาจมีการเปลี่ยนแปลง');
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueListLog = logs.find((log) => log.queueListSaved);
+    assert.ok(queueListLog);
+    assert.match(queueListLog.queueListReplyTexts[0], /โชคประชาวัน 385✅✅/);
+    assert.equal(queueListLog.queueListReplyTexts[0].includes('*คิวจุดอาจมีการเปลี่ยนแปลง'), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('replies with queue list guidance when queue list cannot be parsed', async () => {
   const server = await startServer();
 
