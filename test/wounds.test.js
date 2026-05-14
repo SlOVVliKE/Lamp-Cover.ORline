@@ -697,8 +697,8 @@ test('pushes personal win and loss result cards after confirmed result settlemen
     const loseTexts = collectFlexTexts(loseNotification.messages).join('\n');
 
     assert.match(winTexts, /ผลรอบ "AIO"/);
-    assert.match(winTexts, /\+1,900\.00/);
-    assert.match(winTexts, /\+2,000\.00 -5% = \+1,900\.00/);
+    assert.match(winTexts, /\+1,800\.00/);
+    assert.match(winTexts, /\+2,000\.00 -10% = \+1,800\.00/);
     assert.match(loseTexts, /ผลรอบ "AIO"/);
     assert.match(loseTexts, /ผลออก 900/);
     assert.match(loseTexts, /❌ แพ้ vs AIO/);
@@ -1349,7 +1349,7 @@ test('settles number มา custom prices by range during no-builder rounds', as
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
-    assert.equal(byUserId.get('UnumberMaOpen').balance, 295);
+    assert.equal(byUserId.get('UnumberMaOpen').balance, 290);
     assert.equal(byUserId.get('UnumberMaAccept').balance, 100);
   } finally {
     await server.stop();
@@ -2215,7 +2215,7 @@ test('confirms result twice and records the queue price verdict', async () => {
   }
 });
 
-test('settles a ไล่ prediction as winner with 0.95 payout', async () => {
+test('settles a ไล่ prediction as winner with 0.90 payout', async () => {
   const server = await startServer();
 
   try {
@@ -2277,12 +2277,12 @@ test('settles a ไล่ prediction as winner with 0.95 payout', async () => {
     assert.equal(wounds[0].winnerUserId, 'Urunner');
     assert.equal(wounds[0].loserUserId, 'Ufader');
     assert.equal(wounds[0].stakeAmount, 100);
-    assert.equal(wounds[0].winnerPayoutAmount, 95);
-    assert.equal(wounds[0].systemFeeAmount, 5);
+    assert.equal(wounds[0].winnerPayoutAmount, 90);
+    assert.equal(wounds[0].systemFeeAmount, 10);
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
-    assert.equal(byUserId.get('Urunner').balance, 295);
+    assert.equal(byUserId.get('Urunner').balance, 290);
     assert.equal(byUserId.get('Ufader').balance, 100);
   } finally {
     await server.stop();
@@ -2353,7 +2353,7 @@ test('settles a ถอย or ยั่ง prediction as winner when the result i
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
-    assert.equal(byUserId.get('Ufader').balance, 295);
+    assert.equal(byUserId.get('Ufader').balance, 290);
     assert.equal(byUserId.get('Urunner').balance, 100);
   } finally {
     await server.stop();
@@ -2433,7 +2433,7 @@ test('uses the post-close builder price as the primary settlement price', async 
 
     const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
-    assert.equal(byUserId.get('Uaccepter-post-close').balance, 295);
+    assert.equal(byUserId.get('Uaccepter-post-close').balance, 290);
     assert.equal(byUserId.get('Uopener-post-close').balance, 100);
   } finally {
     await server.stop();
@@ -2503,6 +2503,174 @@ test('settles a result inside the builder price as a draw without changing balan
     const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
     assert.equal(byUserId.get('Urunner').balance, 200);
     assert.equal(byUserId.get('Ufader').balance, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('settles signed adjustable ไล่ keywords against the adjusted builder price', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsettle-adjusted-dai');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UadjustedDaiOpen', 500, 'm-credit-adjusted-dai-open', 1710000097000),
+      creditEvent('UadjustedDaiAccept', 500, 'm-credit-adjusted-dai-accept', 1710000097001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-open', text: 'เปิด ส.ไพศาล' },
+        timestamp: 1710000097100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'UadjustedDaiOpen' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-trade', text: '-10ล300' },
+        timestamp: 1710000097200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'UadjustedDaiAccept' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-accept', quotedMessageId: 'm-settle-adjusted-dai-trade', text: 'ต' },
+        timestamp: 1710000097300
+      },
+      confirmPairEvent(
+        'Gsettle-adjusted-dai',
+        'UadjustedDaiOpen',
+        'm-settle-adjusted-dai-accept',
+        'm-settle-adjusted-dai-confirm',
+        1710000097350
+      ),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-close', text: 'ปิด' },
+        timestamp: 1710000097400
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-price', text: 'ราคาช่าง 340-375' },
+        timestamp: 1710000097500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-result-1', text: 'แจ้งผล 370' },
+        timestamp: 1710000097600
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-dai', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-dai-result-2', text: 'แจ้งผล 370' },
+        timestamp: 1710000097700
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].openKeyword, '-10ล');
+    assert.equal(wounds[0].priceAdjustment, -10);
+    assert.equal(wounds[0].priceRawUsed, '330-365');
+    assert.equal(wounds[0].settlementStatus, 'settled');
+    assert.equal(wounds[0].winningSide, 'chang_dai');
+    assert.equal(wounds[0].winnerUserId, 'UadjustedDaiOpen');
+    assert.equal(wounds[0].loserUserId, 'UadjustedDaiAccept');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('UadjustedDaiOpen').balance, 770);
+    assert.equal(byUserId.get('UadjustedDaiAccept').balance, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('settles positive signed adjustable ถอย keywords against the adjusted builder price', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gsettle-adjusted-yang');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UadjustedYangOpen', 500, 'm-credit-adjusted-yang-open', 1710000098000),
+      creditEvent('UadjustedYangAccept', 500, 'm-credit-adjusted-yang-accept', 1710000098001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-open', text: 'เปิด ส.ไพศาล' },
+        timestamp: 1710000098100
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'UadjustedYangOpen' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-trade', text: '+10ถ300' },
+        timestamp: 1710000098200
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'UadjustedYangAccept' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-accept', quotedMessageId: 'm-settle-adjusted-yang-trade', text: 'ต' },
+        timestamp: 1710000098300
+      },
+      confirmPairEvent(
+        'Gsettle-adjusted-yang',
+        'UadjustedYangOpen',
+        'm-settle-adjusted-yang-accept',
+        'm-settle-adjusted-yang-confirm',
+        1710000098350
+      ),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-close', text: 'ปิด' },
+        timestamp: 1710000098400
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-price', text: 'ราคาช่าง 340-375' },
+        timestamp: 1710000098500
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-result-1', text: 'แจ้งผล 345' },
+        timestamp: 1710000098600
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gsettle-adjusted-yang', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-settle-adjusted-yang-result-2', text: 'แจ้งผล 345' },
+        timestamp: 1710000098700
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds[0].openKeyword, '+10ถ');
+    assert.equal(wounds[0].priceAdjustment, 10);
+    assert.equal(wounds[0].priceRawUsed, '350-385');
+    assert.equal(wounds[0].settlementStatus, 'settled');
+    assert.equal(wounds[0].winningSide, 'chang_yang');
+    assert.equal(wounds[0].winnerUserId, 'UadjustedYangOpen');
+    assert.equal(wounds[0].loserUserId, 'UadjustedYangAccept');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const byUserId = new Map(credits.map((credit) => [credit.userId, credit]));
+    assert.equal(byUserId.get('UadjustedYangOpen').balance, 770);
+    assert.equal(byUserId.get('UadjustedYangAccept').balance, 200);
   } finally {
     await server.stop();
   }
@@ -3192,6 +3360,82 @@ test('queue lookup replies with the same result summary format after result conf
     assert.equal(queueLookupLog.queueLookupFound, true);
     assert.deepEqual(queueLookupLog.queueLookupReplyTexts, [
       'คิวจุด✅\n\nกอดก้อนเมฆ 300-320 438✅\nน้องเหมียว'
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('queue lookup appends opened rounds that are not in the saved queue list', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    const queueText = [
+      'คิวจุดรายการ',
+      'กอดก้อนเมฆ',
+      'น้องเหมียว',
+      '',
+      '*คิวจุดอาจมีการเปลี่ยนแปลง'
+    ].join('\n');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-lookup-extra-round', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-save', text: queueText },
+        timestamp: 1710000217000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-open', text: 'เปิด ส.ไพศาล' },
+        timestamp: 1710000218000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-close', text: 'ปิด' },
+        timestamp: 1710000219000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-price', text: 'ราคาช่าง 340-375' },
+        timestamp: 1710000220000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-result-1', text: 'แจ้งผล 370' },
+        timestamp: 1710000221000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-queue-extra-result-2', text: 'แจ้งผล 370' },
+        timestamp: 1710000222000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-lookup-extra-round', userId: 'Umember' },
+        message: { type: 'text', id: 'm-queue-extra-lookup', text: 'คิวจุด' },
+        timestamp: 1710000223000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested);
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, true);
+    assert.deepEqual(queueLookupLog.queueLookupReplyTexts, [
+      'คิวจุด✅\n\nกอดก้อนเมฆ\nน้องเหมียว\nส.ไพศาล 340-375 370➖\n\n*คิวจุดอาจมีการเปลี่ยนแปลง'
     ]);
   } finally {
     await server.stop();

@@ -87,7 +87,7 @@ const MAX_BLACKLIST_MODES = 500;
 const MAX_CREDIT_TRANSACTIONS = 200;
 const BLACKLIST_MODE_TTL_MS = 10 * 60 * 1000;
 const RESULT_CONFIRMATION_WINDOW_MS = 5 * 60 * 1000;
-const WIN_PAYOUT_RATE = 0.95;
+const WIN_PAYOUT_RATE = 0.9;
 const WITHDRAWAL_OPEN_HOUR = 18;
 const WITHDRAWAL_CLOSE_HOUR = 8;
 const WITHDRAWAL_TIME_CHECK_DISABLED = process.env.WITHDRAWAL_TIME_CHECK_DISABLED === 'true';
@@ -833,18 +833,23 @@ const CUSTOM_PRICE_KEYWORDS = [
 function buildTradeKeywords() {
   const adjustments = [];
   for (let number = 1; number <= 30; number += 1) {
-    adjustments.push(`+${number}`, `-${number}`);
+    adjustments.push({ text: `+${number}`, value: number }, { text: `-${number}`, value: -number });
   }
 
   const keywords = [];
   for (const item of BASE_TRADE_KEYWORDS) {
     if (item.adjustable) {
       for (const adjustment of adjustments) {
-        keywords.push({ keyword: `${adjustment}${item.keyword}`, side: item.side });
+        keywords.push({
+          keyword: `${adjustment.text}${item.keyword}`,
+          side: item.side,
+          baseKeyword: item.keyword,
+          priceAdjustment: adjustment.value
+        });
       }
     }
 
-    keywords.push({ keyword: item.keyword, side: item.side });
+    keywords.push({ keyword: item.keyword, side: item.side, baseKeyword: item.keyword, priceAdjustment: 0 });
   }
 
   return keywords.sort((a, b) => b.keyword.length - a.keyword.length);
@@ -892,6 +897,8 @@ function parseTradeMessage(message) {
       return {
         side: item.side,
         keyword: item.keyword,
+        baseKeyword: item.baseKeyword || item.keyword,
+        priceAdjustment: Number(item.priceAdjustment || 0),
         amount: match[1] || '',
         rawText: text
       };
@@ -917,6 +924,8 @@ function parseTradeMessage(message) {
     return {
       side: keywordEntry?.side || 'custom_price',
       keyword,
+      baseKeyword: keyword,
+      priceAdjustment: 0,
       amount,
       rawText: text,
       priceRaw,
@@ -1213,6 +1222,26 @@ function parseSettlementPrice(value) {
     raw: single[1],
     low: price,
     high: price
+  };
+}
+
+function formatSettlementPriceRaw(low, high) {
+  return low === high ? String(low) : `${low}-${high}`;
+}
+
+function applyPriceAdjustment(price, adjustment) {
+  const offset = Number(adjustment || 0);
+  if (!price || !Number.isFinite(offset) || offset === 0) return price;
+
+  const adjustedLow = Number(price.low) + offset;
+  const adjustedHigh = Number(price.high) + offset;
+  const low = Math.min(adjustedLow, adjustedHigh);
+  const high = Math.max(adjustedLow, adjustedHigh);
+
+  return {
+    raw: formatSettlementPriceRaw(low, high),
+    low,
+    high
   };
 }
 
@@ -1520,13 +1549,17 @@ function buildQueueSummary(groupId) {
   const roundsByName = new Map(
     rounds.map((round) => [normalizeGroupName(round.queueName), round])
   );
+  const listedQueueNames = new Set(queueList.items.map((item) => normalizeGroupName(item.name)));
   const lines = queueList.items.map((item) => {
     const round = roundsByName.get(normalizeGroupName(item.name));
     return round ? buildRoundResultLine(round) : item.name;
   });
+  const extraRoundLines = rounds
+    .filter((round) => !listedQueueNames.has(normalizeGroupName(round.queueName)))
+    .map(buildRoundResultLine);
   const note = queueList.note ? `\n\n${queueList.note}` : '';
 
-  return `คิวจุด✅\n\n${lines.join('\n')}${note}`;
+  return `คิวจุด✅\n\n${[...lines, ...extraRoundLines].join('\n')}${note}`;
 }
 
 function buildQueueListSavedReply(queueList) {
@@ -2242,7 +2275,10 @@ function getNumberMaWinningSide(result, price) {
 }
 
 function getSettlementPriceForWound(wound, round) {
-  return parseSettlementPrice(wound?.priceRaw) || getRoundPrice(round);
+  const woundPrice = parseSettlementPrice(wound?.priceRaw);
+  if (woundPrice) return woundPrice;
+
+  return applyPriceAdjustment(getRoundPrice(round), wound?.priceAdjustment);
 }
 
 function getWinningSide(result, price) {
@@ -2844,7 +2880,7 @@ function getViewerSettlement(wound, viewerUserId) {
       color: '#22C55E',
       icon: '✅',
       title: `🎉 ผลรอบ "${wound.roundName || '-'}"`,
-      detail: `+${formatPoints(stakeAmount)} -5% = +${formatPoints(payout)}`
+      detail: `+${formatPoints(stakeAmount)} -10% = +${formatPoints(payout)}`
     };
   }
 
@@ -4402,6 +4438,7 @@ async function createWoundFromReply(event) {
     accepterPrediction: predictionLabels.accepterPrediction,
     amount: tradeForWound.amount,
     requiredCredit,
+    priceAdjustment: Number(tradeForWound.priceAdjustment || 0),
     priceRaw: tradeForWound.priceRaw || '',
     openingPriceRaw: openRound.priceRaw || '',
     customPrice: Boolean(tradeForWound.customPrice),

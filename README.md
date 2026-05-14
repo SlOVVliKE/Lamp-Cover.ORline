@@ -559,9 +559,9 @@ Settlement rules:
 - `ชย`, `ชถ`, `ย`, `ถ`, `ถอย`, `ยั่ง`, `ช่างยั่ง`, and `ช่างถอย` are `ทายแพ้`.
 - `มา` means the opener predicts the result will be inside the custom range, for example `8-25 มา2000`.
 - `ทายแพ้` means the user predicts the result will be lower than the builder price. It is not the losing status. If that prediction is correct, that user receives the payout.
-- The play rate is 1:1. The payout is 0.95 of the stake, and 5% is kept by the admin/system.
+- The play rate is 1:1. The payout is 0.90 of the stake, and 10% is kept by the admin/system.
 - If the result is inside the builder price range, the wound is a draw and both sides keep their credit.
-- After the admin confirms the result, the bot pushes private result cards to both users. For example, the loser sees `-100.00`, and the winner sees `+100.00 -5% = +95.00`.
+- After the admin confirms the result, the bot pushes private result cards to both users. For example, the loser sees `-100.00`, and the winner sees `+100.00 -10% = +90.00`.
 
 A registered admin confirms the result with a two-step command:
 
