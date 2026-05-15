@@ -4018,6 +4018,13 @@ test('blacklisted users cannot bet, request behind house, join invites, or withd
         replyToken: 'reply-blacklisted-withdraw',
         message: { type: 'text', id: 'm-blacklisted-withdraw', text: 'ถอนยอดเงิน' },
         timestamp: Date.parse('2024-03-09T12:00:00.000Z')
+      },
+      {
+        type: 'message',
+        source: { type: 'user', userId: 'Ublacklisted' },
+        replyToken: 'reply-blacklisted-slip',
+        message: { type: 'image', id: 'm-blacklisted-slip' },
+        timestamp: Date.parse('2024-03-09T12:00:01.000Z')
       }
     ]);
 
@@ -4039,6 +4046,10 @@ test('blacklisted users cannot bet, request behind house, join invites, or withd
     const withdrawLog = logs.find((log) => log.userId === 'Ublacklisted' && log.message === 'ถอนยอดเงิน');
     assert.equal(withdrawLog.creditAction, 'blacklisted_withdraw_blocked');
     assert.match(JSON.stringify(withdrawLog.creditReplyMessages), /ระงับการถอน/);
+
+    const slipLog = logs.find((log) => log.userId === 'Ublacklisted' && log.message === 'image');
+    assert.equal(slipLog.creditAction, 'blacklisted_slip_blocked');
+    assert.match(JSON.stringify(slipLog.creditReplyMessages), /ระงับการใช้งานระบบ/);
 
     await postWebhook(server.baseUrl, [
       {
@@ -4079,6 +4090,114 @@ test('blacklisted users cannot bet, request behind house, join invites, or withd
     const logsAfterWhite = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     assert.equal(logsAfterWhite.some((log) => log.blackAccountAction === 'blacklist_removed'), true);
     assert.equal(logsAfterWhite.some((log) => log.userId === 'Ublacklisted' && log.behindHouseRequested), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('registered group admin can add and remove blacklist targets from LINE contact cards', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/blacklist');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gblacklist-contact', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-contact', userId: 'Uadmin' },
+        replyToken: 'reply-contact-open-black',
+        message: { type: 'text', id: 'm-contact-open-black', text: 'เปิดดำ' },
+        timestamp: 1710000085000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-contact', userId: 'Uadmin' },
+        replyToken: 'reply-contact-add',
+        message: { type: 'contact', id: 'm-contact-add', displayName: 'Bad Contact', userId: 'UblackContact' },
+        timestamp: 1710000085001
+      }
+    ]);
+
+    const blacklistAfterAdd = await (await fetch(`${server.baseUrl}/api/blacklist`)).json();
+    assert.equal(blacklistAfterAdd.length, 1);
+    assert.equal(blacklistAfterAdd[0].userId, 'UblackContact');
+    assert.equal(blacklistAfterAdd[0].displayName, 'Bad Contact');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-contact', userId: 'Uadmin' },
+        replyToken: 'reply-contact-open-white',
+        message: { type: 'text', id: 'm-contact-open-white', text: 'เปิดขาว' },
+        timestamp: 1710000085002
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-contact', userId: 'Uadmin' },
+        replyToken: 'reply-contact-remove',
+        message: { type: 'contact', id: 'm-contact-remove', displayName: 'Bad Contact', userId: 'UblackContact' },
+        timestamp: 1710000085003
+      }
+    ]);
+
+    const blacklistAfterRemove = await (await fetch(`${server.baseUrl}/api/blacklist`)).json();
+    assert.equal(blacklistAfterRemove.length, 0);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    assert.equal(logs.some((log) => log.blackAccountAction === 'blacklist_added'), true);
+    assert.equal(logs.some((log) => log.blackAccountAction === 'blacklist_removed'), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('warns admins when a blacklisted user joins the same group', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/blacklist');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gblacklist-join', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-join', userId: 'Uadmin' },
+        replyToken: 'reply-join-open-black',
+        message: { type: 'text', id: 'm-join-open-black', text: 'เปิดดำ' },
+        timestamp: 1710000086000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gblacklist-join', userId: 'Uadmin' },
+        replyToken: 'reply-join-add-contact',
+        message: { type: 'contact', id: 'm-join-add-contact', displayName: 'Bad Joiner', userId: 'UblackJoiner' },
+        timestamp: 1710000086001
+      },
+      {
+        type: 'memberJoined',
+        source: { type: 'group', groupId: 'Gblacklist-join', userId: 'Uinviter' },
+        replyToken: 'reply-blacklisted-member-joined',
+        joined: { members: [{ type: 'user', userId: 'UblackJoiner' }] },
+        timestamp: 1710000086002
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const joinLog = logs.find((log) => log.blacklistedMemberJoinDetected);
+
+    assert.ok(joinLog);
+    assert.deepEqual(joinLog.blacklistedMemberJoinTargetUserIds, ['UblackJoiner']);
+    assert.deepEqual(joinLog.blacklistedMemberJoinTargetNames, ['Bad Joiner']);
+    assert.match(joinLog.blacklistedMemberJoinReplyTexts[0], /พบผู้ใช้บัญชีดำเข้ากลุ่ม/);
+    assert.match(joinLog.blacklistedMemberJoinReplyTexts[0], /Bad Joiner/);
+    assert.match(joinLog.blacklistedMemberJoinReplyTexts[0], /กรุณาลบออกจากกลุ่ม/);
   } finally {
     await server.stop();
   }
@@ -5567,6 +5686,81 @@ test('blocks a new queue round until the previous round result is confirmed', as
     logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
     assert.equal(logs.some((log) => log.queueAction === 'result_confirmation_requested' && log.result === 'จาวทุกแผล'), true);
     assert.equal(logs.some((log) => log.queueAction === 'result_confirmed' && log.result === 'จาวทุกแผล'), true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('forces every active wound to draw when admin reports จาวทุกแผล', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/wounds');
+    await clearJson(server.baseUrl, '/api/rounds');
+    await clearJson(server.baseUrl, '/api/credits');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gdraw-all');
+
+    await postWebhook(server.baseUrl, [
+      creditEvent('UdrawOpener', 500, 'm-draw-all-credit-opener', 1710000016000),
+      creditEvent('UdrawAccepter', 500, 'm-draw-all-credit-accepter', 1710000016001),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-draw-all-open-round', text: 'เปิด ส.ไพศาล 340-375' },
+        timestamp: 1710000016002
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'UdrawOpener', displayName: 'คนไล่' },
+        message: { type: 'text', id: 'm-draw-all-open-trade', text: 'ชล200' },
+        timestamp: 1710000016003
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'UdrawAccepter', displayName: 'คนรับ' },
+        message: { type: 'text', id: 'm-draw-all-accept', quotedMessageId: 'm-draw-all-open-trade', text: 'ต' },
+        timestamp: 1710000016004
+      },
+      confirmPairEvent('Gdraw-all', 'UdrawOpener', 'm-draw-all-accept', 'm-draw-all-confirm', 1710000016005),
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-draw-all-close-round', text: 'ปิด' },
+        timestamp: 1710000016006
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-draw-all-result-first', text: 'แจ้งผล จาวทุกแผล' },
+        timestamp: 1710000016007
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gdraw-all', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-draw-all-result-second', text: 'แจ้งผล จาวทุกแผล' },
+        timestamp: 1710000016008
+      }
+    ]);
+
+    const wounds = await (await fetch(`${server.baseUrl}/api/wounds`)).json();
+    assert.equal(wounds.length, 1);
+    assert.equal(wounds[0].status, 'closed');
+    assert.equal(wounds[0].result, 'จาวทุกแผล');
+    assert.equal(wounds[0].settlementStatus, 'draw');
+    assert.equal(wounds[0].winningSide, 'draw');
+    assert.equal(wounds[0].winnerUserId, '');
+    assert.equal(wounds[0].loserUserId, '');
+
+    const credits = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const openerCredit = credits.find((credit) => credit.userId === 'UdrawOpener');
+    const accepterCredit = credits.find((credit) => credit.userId === 'UdrawAccepter');
+    assert.equal(openerCredit.balance, 500);
+    assert.equal(accepterCredit.balance, 500);
+    assert.equal(openerCredit.transactions.some((transaction) => transaction.type === 'wound_win' || transaction.type === 'wound_loss'), false);
+    assert.equal(accepterCredit.transactions.some((transaction) => transaction.type === 'wound_win' || transaction.type === 'wound_loss'), false);
   } finally {
     await server.stop();
   }

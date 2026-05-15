@@ -861,6 +861,7 @@ const NO_BUILDER_FALLBACK_MARKERS = ['ชตย', 'ช่างตีไม่�
 const NO_BUILDER_FALLBACK_MARKER_PATTERN = NO_BUILDER_FALLBACK_MARKERS
   .map((marker) => escapeRegExp(marker))
   .join('|');
+const DRAW_ALL_RESULT_KEYWORDS = ['จาวทุกแผล'];
 
 function normalizeMessageText(message) {
   return String(message || '').trim().replace(/\s+/g, ' ');
@@ -969,6 +970,11 @@ function parseResultCommand(message) {
   const match = normalizeMessageText(message).match(/^แจ้งผล\s*(.+)$/i);
   const result = match ? match[1].trim() : '';
   return result || null;
+}
+
+function isDrawAllResult(result) {
+  const compactResult = normalizeMessageText(result).replace(/\s+/g, '');
+  return DRAW_ALL_RESULT_KEYWORDS.includes(compactResult);
 }
 
 function normalizeQueueLine(line) {
@@ -1723,6 +1729,17 @@ function getMessageMentionTargets(event) {
     .filter((target) => target.userId);
 }
 
+function getContactMessageTarget(event) {
+  if (event?.type !== 'message' || event?.message?.type !== 'contact' || !event.message?.userId) {
+    return null;
+  }
+
+  return {
+    userId: String(event.message.userId || '').trim(),
+    displayName: normalizeDisplayName(event.message.displayName)
+  };
+}
+
 function findKnownGroupMemberByDisplayName(groupId, displayName) {
   const targetName = normalizeDisplayName(displayName).toLowerCase();
   if (!groupId || !targetName) return null;
@@ -1764,6 +1781,11 @@ function normalizeBlacklistTargetText(message, explicitTargetText = '') {
 async function resolveBlacklistTargets(event, targetText = '') {
   const source = event.source || {};
   const targetsByUserId = new Map();
+  const contactTarget = getContactMessageTarget(event);
+
+  if (contactTarget?.userId) {
+    targetsByUserId.set(contactTarget.userId, contactTarget);
+  }
 
   for (const target of getMessageMentionTargets(event)) {
     targetsByUserId.set(target.userId, target);
@@ -1865,7 +1887,7 @@ function buildBlacklistTargetReply(mode, groupName, targets) {
   const title = isRemove ? '✅ เปิดบัญชีขาวสำเร็จ' : '✅ เพิ่มบัญชีดำสำเร็จ';
   const note = isRemove
     ? 'ผู้ใช้นี้กลับมาใช้งานในกลุ่มนี้ได้แล้วครับ'
-    : 'ระบบจะไม่รับแทง ไม่ตอบหลังบ้าน และไม่ให้ถอนจากบัญชีนี้ครับ';
+    : 'ระบบจะไม่รับแทง ไม่ส่งหลังบ้าน/เลขบัญชี ไม่ให้ถอน และไม่รับเติมเครดิตจากบัญชีนี้ครับ';
 
   return `${title}\nกลุ่ม ${groupName || '-'}\n${names}\n\n${note}`;
 }
@@ -1877,6 +1899,10 @@ function buildBlacklistTargetNotFoundReply(mode) {
 
 function buildBlacklistedWithdrawBlockedText() {
   return 'บัญชีนี้ถูกระงับการถอน กรุณาติดต่อแอดมินครับ';
+}
+
+function buildBlacklistedSystemBlockedText() {
+  return 'บัญชีนี้ถูกระงับการใช้งานระบบ กรุณาติดต่อแอดมินครับ';
 }
 
 function roundPoints(value) {
@@ -2324,13 +2350,17 @@ function getWinningSide(result, price) {
 
 function buildWoundSettlement(wound, result, round) {
   const builderPrice = getRoundPrice(round);
-  const cancelsByBuilderHit = Boolean(wound?.fallbackNoBuilder && builderPrice);
+  const forceDrawAll = isDrawAllResult(result);
+  const cancelsByBuilderHit = !forceDrawAll && Boolean(wound?.fallbackNoBuilder && builderPrice);
   const price = cancelsByBuilderHit ? builderPrice : getSettlementPriceForWound(wound, round);
-  const winningSide = cancelsByBuilderHit
-    ? ''
-    : wound?.side === 'number_ma'
-      ? getNumberMaWinningSide(result, price)
-      : getWinningSide(result, price);
+  let winningSide = '';
+  if (!cancelsByBuilderHit) {
+    winningSide = forceDrawAll
+      ? 'draw'
+      : wound?.side === 'number_ma'
+        ? getNumberMaWinningSide(result, price)
+        : getWinningSide(result, price);
+  }
   const stakeAmount = roundPoints(getWoundAmount(wound));
   const baseSettlement = {
     priceRawUsed: price?.raw || '',
@@ -3171,6 +3201,19 @@ async function handleSlipCreditEvent(event) {
   if (event.type !== 'message' || event.message?.type !== 'image' || event.source?.type !== 'user' || !event.source?.userId) {
     return null;
   }
+
+  if (isUserBlacklistedAnywhere(event.source.userId)) {
+    const snapshot = getCreditSnapshot(event.source.userId);
+    return {
+      type: 'blacklisted_slip_blocked',
+      creditBalance: snapshot.credit.balance,
+      activeWoundAmount: snapshot.activeWoundAmount,
+      withdrawableBalance: snapshot.withdrawableBalance,
+      activeWoundCount: snapshot.activeWounds.length,
+      replyMessages: [buildBlacklistedSystemBlockedText()]
+    };
+  }
+
   let reservedSlipTransRef = '';
   let creditAddedFromReservedSlip = false;
 
@@ -3810,6 +3853,10 @@ function isGroupTextMessage(event) {
   return event.type === 'message' && event.message?.type === 'text' && event.source?.type === 'group';
 }
 
+function isGroupMessage(event) {
+  return event.type === 'message' && event.source?.type === 'group';
+}
+
 function buildBehindHouseFlex(link) {
   const contents = [];
 
@@ -3986,7 +4033,7 @@ function buildOpenWhiteAccountReply(groupName) {
 }
 
 async function handleBlackAccountCommand(event) {
-  if (!isGroupTextMessage(event)) {
+  if (!isGroupMessage(event)) {
     return null;
   }
 
@@ -3996,7 +4043,8 @@ async function handleBlackAccountCommand(event) {
   }
 
   const messageText = getMessageText(event);
-  const accountListMode = parseOpenAccountListCommand(messageText);
+  const isTextMessage = event.message?.type === 'text';
+  const accountListMode = isTextMessage ? parseOpenAccountListCommand(messageText) : '';
   const groupName = getBoundGroupName(source.groupId);
 
   if (accountListMode) {
@@ -4012,7 +4060,7 @@ async function handleBlackAccountCommand(event) {
     };
   }
 
-  const explicitTargetCommand = parseBlacklistTargetCommand(messageText);
+  const explicitTargetCommand = isTextMessage ? parseBlacklistTargetCommand(messageText) : null;
   const activeMode = getActiveBlacklistMode(source.groupId);
   const mode = explicitTargetCommand?.mode || activeMode?.mode || '';
   if (!mode) {
@@ -4041,6 +4089,58 @@ async function handleBlackAccountCommand(event) {
     groupName,
     targets,
     replyTexts: [buildBlacklistTargetReply(mode, groupName, targets)]
+  };
+}
+
+function getJoinedUserIds(event) {
+  const joinedMembers = Array.isArray(event?.joined?.members) ? event.joined.members : [];
+  return Array.from(new Set(joinedMembers
+    .filter((member) => member?.type === 'user' && member.userId)
+    .map((member) => String(member.userId || '').trim())
+    .filter(Boolean)));
+}
+
+function getBlacklistedJoinTargets(groupId, userIds) {
+  const joinedUserIds = new Set(userIds);
+  if (!groupId || joinedUserIds.size === 0) return [];
+
+  return readBlacklist()
+    .filter((entry) => entry.groupId === groupId && joinedUserIds.has(entry.userId))
+    .map((entry) => ({
+      userId: entry.userId,
+      displayName: normalizeDisplayName(entry.displayName) || findKnownDisplayNameByUserId(entry.userId) || entry.userId
+    }));
+}
+
+function buildBlacklistedMemberJoinReply(groupName, targets) {
+  const names = targets.map((target, index) => `${index + 1}. ${target.displayName || target.userId}`).join('\n');
+  return [
+    '🚫 พบผู้ใช้บัญชีดำเข้ากลุ่ม',
+    `กลุ่ม ${groupName || '-'}`,
+    names,
+    '',
+    'บัญชีนี้ถูกระงับในระบบบอทแล้ว',
+    'แอดมินกรุณาลบออกจากกลุ่มด้วยครับ'
+  ].join('\n');
+}
+
+function handleBlacklistedMemberJoinEvent(event) {
+  if (event.type !== 'memberJoined' || event.source?.type !== 'group') {
+    return null;
+  }
+
+  const source = event.source || {};
+  const targets = getBlacklistedJoinTargets(source.groupId, getJoinedUserIds(event));
+  if (targets.length === 0) {
+    return null;
+  }
+
+  const groupName = getBoundGroupName(source.groupId);
+  return {
+    type: 'blacklisted_member_joined',
+    groupName,
+    targets,
+    replyTexts: [buildBlacklistedMemberJoinReply(groupName, targets)]
   };
 }
 
@@ -5117,6 +5217,7 @@ app.post(
           const queueAction = handleQueueAdminCommand(event, publicBaseUrl);
           const groupAdminAction = await handleGroupAdminLookupCommand(event);
           const blackAccountAction = await handleBlackAccountCommand(event);
+          const blacklistedMemberJoinAction = handleBlacklistedMemberJoinEvent(event);
           const behindHouseAction = handleBehindHouseCommand(event);
           const betGroupInviteAction = handleBetGroupInviteEvent(event);
           const trackedMessage = trackGroupMessage(event);
@@ -5253,6 +5354,24 @@ app.post(
 
             if (Array.isArray(blackAccountAction.replyTexts) && blackAccountAction.replyTexts.length > 0) {
               replyJobs.push(replyToLine(event.replyToken, blackAccountAction.replyTexts));
+            }
+          }
+
+          if (blacklistedMemberJoinAction) {
+            logEntry.blacklistedMemberJoinDetected = true;
+            logEntry.blacklistedMemberJoinGroupName = blacklistedMemberJoinAction.groupName || '';
+            logEntry.blacklistedMemberJoinTargetUserIds = Array.isArray(blacklistedMemberJoinAction.targets)
+              ? blacklistedMemberJoinAction.targets.map((target) => target.userId)
+              : [];
+            logEntry.blacklistedMemberJoinTargetNames = Array.isArray(blacklistedMemberJoinAction.targets)
+              ? blacklistedMemberJoinAction.targets.map((target) => target.displayName || target.userId)
+              : [];
+            logEntry.blacklistedMemberJoinReplyTexts = Array.isArray(blacklistedMemberJoinAction.replyTexts)
+              ? blacklistedMemberJoinAction.replyTexts
+              : [];
+
+            if (logEntry.blacklistedMemberJoinReplyTexts.length > 0) {
+              replyJobs.push(replyToLine(event.replyToken, logEntry.blacklistedMemberJoinReplyTexts));
             }
           }
 
