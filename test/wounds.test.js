@@ -3532,6 +3532,104 @@ test('queue lookup does not reuse old round results after a new queue list is po
   }
 });
 
+test('queue summary after finish without a new queue list only shows newly opened rounds', async () => {
+  const server = await startServer();
+
+  try {
+    await clearJson(server.baseUrl, '/api/logs');
+    await clearJson(server.baseUrl, '/api/admins');
+    await clearJson(server.baseUrl, '/api/queue-lists');
+    await clearJson(server.baseUrl, '/api/rounds');
+
+    await registerAndBindAdmin(server.baseUrl, 'Gqueue-finish-new-day', 'Uadmin', 'บ้านคุ้ม');
+
+    await postWebhook(server.baseUrl, [
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-list', text: 'คิวจุดรายการ\nคิวเก่า\nอีกคิวเก่า' },
+        timestamp: 1710000400000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-open-old', text: 'เปิด คิวเก่า 300-320' },
+        timestamp: 1710000401000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-close-old', text: 'ปิด' },
+        timestamp: 1710000402000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-result-old-a', text: 'แจ้งผล 330' },
+        timestamp: 1710000403000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-result-old-b', text: 'แจ้งผล 330' },
+        timestamp: 1710000404000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-finish', text: 'สิ้นสุด' },
+        timestamp: 1710000405000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-open-new', text: 'เปิด คิวใหม่ 350-380' },
+        timestamp: 1710086800000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-close-new', text: 'ปิด' },
+        timestamp: 1710086801000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-result-new-a', text: 'แจ้งผล 400' },
+        timestamp: 1710086802000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Uadmin' },
+        message: { type: 'text', id: 'm-finish-new-day-result-new-b', text: 'แจ้งผล 400' },
+        timestamp: 1710086803000
+      },
+      {
+        type: 'message',
+        source: { type: 'group', groupId: 'Gqueue-finish-new-day', userId: 'Umember' },
+        message: { type: 'text', id: 'm-finish-new-day-lookup', text: 'คิวจุด' },
+        timestamp: 1710086804000
+      }
+    ]);
+
+    const logs = await (await fetch(`${server.baseUrl}/api/logs`)).json();
+    const resultLog = logs.find((log) => log.message === 'แจ้งผล 400' && log.queueAction === 'result_confirmed');
+    assert.ok(resultLog);
+    assert.match(resultLog.queueReplyTexts[1], /^คิวจุด✅/);
+    assert.match(resultLog.queueReplyTexts[1], /คิวใหม่ 350-380 400✅/);
+    assert.equal(resultLog.queueReplyTexts[1].includes('คิวเก่า'), false);
+    assert.equal(resultLog.queueReplyTexts[1].includes('330'), false);
+
+    const queueLookupLog = logs.find((log) => log.queueLookupRequested && log.groupId === 'Gqueue-finish-new-day');
+    assert.ok(queueLookupLog);
+    assert.equal(queueLookupLog.queueLookupFound, true);
+    assert.match(queueLookupLog.queueLookupReplyTexts[0], /คิวใหม่ 350-380 400✅/);
+    assert.equal(queueLookupLog.queueLookupReplyTexts[0].includes('คิวเก่า'), false);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('replies that no queue exists from queue lookup keywords', async () => {
   const server = await startServer();
 
@@ -5539,6 +5637,8 @@ test('credits page requires login and supports manual top up by user name', asyn
     assert.match(html, /ยอดคงเหลือ/);
     assert.match(html, /10\.00/);
     assert.match(html, /0\.00/);
+    assert.match(html, /value="deduct"/);
+    assert.match(html, />ลบเครดิต</);
     assert.doesNotMatch(html, /href="\/credits\/login">Login/);
     assert.doesNotMatch(html, /href="\/logs">Logs/);
     assert.doesNotMatch(html, /UmanualPageUser/);
@@ -5566,6 +5666,34 @@ test('credits page requires login and supports manual top up by user name', asyn
     assert.equal(credit.balance, 60);
     assert.equal(credit.transactions[0].type, 'manual_credit_added');
     assert.equal(credit.transactions[0].manualNote, 'manual fallback');
+
+    const manualDeduct = await fetch(`${server.baseUrl}/api/credits/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ userKey, amount: 15, note: 'manual correction', action: 'deduct' })
+    });
+    const manualDeductBody = await manualDeduct.json();
+    assert.equal(manualDeduct.status, 200);
+    assert.equal(manualDeductBody.success, true);
+    assert.equal(manualDeductBody.balance, 45);
+
+    const creditsAfterDeduct = await (await fetch(`${server.baseUrl}/api/credits`)).json();
+    const deductedCredit = creditsAfterDeduct.find((row) => row.userId === 'UmanualPageUser');
+    assert.equal(deductedCredit.balance, 45);
+    assert.equal(deductedCredit.totalAdded, 60);
+    assert.equal(deductedCredit.transactions[0].type, 'manual_credit_deducted');
+    assert.equal(deductedCredit.transactions[0].amount, -15);
+    assert.equal(deductedCredit.transactions[0].manualNote, 'manual correction');
+
+    const overDeduct = await fetch(`${server.baseUrl}/api/credits/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ userKey, amount: 5000, note: 'too much', action: 'deduct' })
+    });
+    const overDeductBody = await overDeduct.json();
+    assert.equal(overDeduct.status, 400);
+    assert.equal(overDeductBody.success, false);
+    assert.match(overDeductBody.error, /ยอดเครดิตไม่พอ/);
 
     const manualKnownUser = await fetch(`${server.baseUrl}/api/credits/manual`, {
       method: 'POST',

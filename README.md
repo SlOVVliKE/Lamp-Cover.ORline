@@ -263,7 +263,7 @@ CREDITS_ADMIN_SESSION_SECRET=change_this_long_random_secret
 
 For safety, production will not enable the old default `Admin/admin123` login unless you explicitly set `ALLOW_DEFAULT_CREDITS_ADMIN=true`. Do not use that fallback for real deployment.
 
-The page shows LINE display names, profile pictures when available, each user's current balance, and a name search box instead of raw user IDs. It lets an admin manually add credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a top-up card to that user.
+The page shows LINE display names, profile pictures when available, each user's current balance, and a name search box instead of raw user IDs. It lets an admin manually add or deduct credit for each listed user. Manual top-ups are stored as `manual_credit_added` transactions, and manual deductions are stored as `manual_credit_deducted` transactions without reducing the user's lifetime top-up total. If `LINE_CHANNEL_ACCESS_TOKEN` is set and the user can receive bot messages, the bot also pushes a matching add/deduct card to that user.
 
 ## Broadcast Admin Page
 

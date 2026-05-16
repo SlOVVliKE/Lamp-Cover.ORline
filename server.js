@@ -600,6 +600,25 @@ function formatDate(timestamp) {
   });
 }
 
+function getBangkokDayStartTimestamp(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 0;
+
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  const year = Number(parts.find((part) => part.type === 'year')?.value);
+  const month = Number(parts.find((part) => part.type === 'month')?.value);
+  const day = Number(parts.find((part) => part.type === 'day')?.value);
+
+  if (!year || !month || !day) return 0;
+
+  return Date.UTC(year, month - 1, day) - 7 * 60 * 60 * 1000;
+}
+
 function normalizeGroupName(groupName) {
   return String(groupName || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -1381,18 +1400,58 @@ function getQueueListTimestamp(queueList) {
   return Number(queueList?.timestamp || 0);
 }
 
-function isRoundInQueueListWindow(round, queueList) {
-  const queueListTimestamp = getQueueListTimestamp(queueList);
-  if (!queueListTimestamp) return true;
-
-  return Number(round?.openedTimestamp || 0) >= queueListTimestamp;
-}
-
-function readRoundsForQueueList(groupId, queueList) {
+function getLatestQueueDayFinishedTimestamp(groupId) {
   return readRounds()
     .filter((round) => round.groupId === groupId)
-    .filter((round) => !queueList || isRoundInQueueListWindow(round, queueList))
+    .reduce((latestTimestamp, round) => {
+      const finishedTimestamp = Number(round.queueDayFinishedTimestamp || 0);
+      return Math.max(latestTimestamp, finishedTimestamp);
+    }, 0);
+}
+
+function getQueueRoundWindowStart(groupId, queueList, referenceTimestamp = Date.now()) {
+  const queueListTimestamp = getQueueListTimestamp(queueList);
+  if (queueListTimestamp) return queueListTimestamp;
+
+  return Math.max(
+    getLatestQueueDayFinishedTimestamp(groupId),
+    getBangkokDayStartTimestamp(referenceTimestamp)
+  );
+}
+
+function isRoundInQueueListWindow(round, windowStart) {
+  if (!windowStart) return true;
+
+  return Number(round?.openedTimestamp || 0) >= windowStart;
+}
+
+function readRoundsForQueueList(groupId, queueList, referenceTimestamp = Date.now()) {
+  const windowStart = getQueueRoundWindowStart(groupId, queueList, referenceTimestamp);
+
+  return readRounds()
+    .filter((round) => round.groupId === groupId)
+    .filter((round) => isRoundInQueueListWindow(round, windowStart))
     .sort((roundA, roundB) => (roundA.openedTimestamp || 0) - (roundB.openedTimestamp || 0));
+}
+
+function markQueueDayFinishedForGroup(groupId, finishedTimestamp) {
+  const key = String(groupId || '').trim();
+  if (!key) return;
+
+  const timestamp = Number(finishedTimestamp) || Date.now();
+  const rounds = readRounds().map((round) => {
+    if (round.groupId !== key || Number(round.openedTimestamp || 0) > timestamp) {
+      return round;
+    }
+
+    return {
+      ...round,
+      queueDayFinishedTimestamp: timestamp,
+      queueDayFinishedTime: formatDate(timestamp)
+    };
+  });
+
+  writeRounds(rounds);
 }
 
 function upsertRound(roundEntry) {
@@ -1543,9 +1602,9 @@ function buildResultConfirmedReply(round, result) {
   return `${round.queueName}\n\nผล ${result}${numericSuffix}\n\n🚀🚀🚀🚀🚀`;
 }
 
-function buildQueueSummary(groupId) {
+function buildQueueSummary(groupId, referenceTimestamp = Date.now()) {
   const queueList = getLatestQueueListForGroup(groupId);
-  const rounds = readRoundsForQueueList(groupId, queueList);
+  const rounds = readRoundsForQueueList(groupId, queueList, referenceTimestamp);
 
   if (!queueList) {
     const lines = rounds.map(buildRoundResultLine);
@@ -1993,6 +2052,11 @@ function getManualCreditUsers() {
 function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
   const source = event.source || {};
   const nowTimestamp = event.timestamp || Date.now();
+  const { totalAddedDelta, ...transactionMetadata } = transactionFields || {};
+  const parsedTotalAddedDelta = Number(totalAddedDelta);
+  const totalAddedChange = Number.isFinite(parsedTotalAddedDelta)
+    ? parsedTotalAddedDelta
+    : Math.max(totalAmount, 0);
   const credits = readCredits();
   const existing = credits.find((credit) => credit.userId === source.userId) || {
     userId: source.userId,
@@ -2008,16 +2072,16 @@ function addCreditForUser(event, totalAmount, rawText, transactionFields = {}) {
     rawText,
     messageId: event.message?.id || '',
     displayName: getEventDisplayName(event),
-    pictureUrl: normalizePictureUrl(event?.source?.pictureUrl || event?.pictureUrl || transactionFields.pictureUrl),
+    pictureUrl: normalizePictureUrl(event?.source?.pictureUrl || event?.pictureUrl || transactionMetadata.pictureUrl),
     balanceAfter: nextBalance,
     timestamp: nowTimestamp,
     time: formatDate(nowTimestamp),
-    ...transactionFields
+    ...transactionMetadata
   };
   const updatedCredit = {
     ...existing,
     balance: nextBalance,
-    totalAdded: roundPoints(existing.totalAdded + totalAmount),
+    totalAdded: roundPoints(existing.totalAdded + totalAddedChange),
     transactions: [transaction, ...(existing.transactions || [])].slice(0, MAX_CREDIT_TRANSACTIONS),
     updatedTimestamp: nowTimestamp,
     updatedTime: formatDate(nowTimestamp)
@@ -2617,6 +2681,26 @@ function buildManualCreditAddedFlex(amount, snapshot) {
       amount: formatPoints(amount),
       rows: [
         flexRow('เครดิตที่ได้รับ', `+${formatPoints(amount)}`, '#22C55E'),
+        flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
+        flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B')
+      ],
+      footer: 'ส่งเมนูเพื่อดูยอดหรือแผลที่กำลังติด'
+    })
+  };
+}
+
+function buildManualCreditDeductedFlex(amount, snapshot) {
+  return {
+    type: 'flex',
+    altText: `ลบเครดิตสำเร็จ -${formatPoints(amount)}`,
+    contents: buildCreditBubble({
+      title: '✓ ลบเครดิตสำเร็จ',
+      titleColor: '#EF4444',
+      bodyColor: '#EF4444',
+      subtitle: 'ลบโดยแอดมิน',
+      amount: `-${formatPoints(amount)}`,
+      rows: [
+        flexRow('เครดิตที่ถูกลบ', `-${formatPoints(amount)}`, '#EF4444'),
         flexRow('ยอดคงเหลือ', formatPoints(snapshot.credit.balance)),
         flexRow('กำลังใช้', formatPoints(snapshot.activeWoundAmount), '#F59E0B')
       ],
@@ -4811,13 +4895,16 @@ function handleQueueLookupCommand(event) {
   }
 
   const source = event.source || {};
+  const nowTimestamp = event.timestamp || Date.now();
   const queueList = getLatestQueueListForGroup(source.groupId);
+  const currentRounds = readRoundsForQueueList(source.groupId, queueList, nowTimestamp);
+  const found = Boolean(queueList) || currentRounds.length > 0;
 
   return {
     type: 'queue_lookup',
-    found: Boolean(queueList),
+    found,
     queueList,
-    replyTexts: [queueList ? buildQueueSummary(source.groupId) : NO_QUEUE_REPLY]
+    replyTexts: [found ? buildQueueSummary(source.groupId, nowTimestamp) : NO_QUEUE_REPLY]
   };
 }
 
@@ -4930,8 +5017,9 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
 
   const nowTimestamp = event.timestamp || Date.now();
   if (parseFinishQueueCommand(messageText)) {
-    const queueSummary = buildQueueSummary(source.groupId);
+    const queueSummary = buildQueueSummary(source.groupId, nowTimestamp);
     const queueFinishedReply = buildQueueFinishedReply();
+    markQueueDayFinishedForGroup(source.groupId, nowTimestamp);
     clearQueueListForGroup(source.groupId);
     return {
       type: 'queue_day_finished',
@@ -5151,7 +5239,7 @@ function handleQueueAdminCommand(event, publicBaseUrl = '') {
   upsertRound(resultedRound);
   const queueFinished = !wasQueueFinishedBefore && isQueueListFinished(source.groupId);
   const queueFinishedReply = queueFinished ? buildQueueFinishedReply() : '';
-  const replyTexts = [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId)];
+  const replyTexts = [buildResultConfirmedReply(resultedRound, result), buildQueueSummary(source.groupId, nowTimestamp)];
   if (queueFinishedReply) {
     replyTexts.push(queueFinishedReply);
   }
@@ -7172,7 +7260,10 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
             หมายเหตุ
             <input name="note" type="text" maxlength="80" placeholder="เช่น เติมมือ">
           </label>
-          <button type="submit">เติมเครดิต</button>
+          <div class="credit-button-row">
+            <button class="add-credit-button" type="submit" name="action" value="add">เติมเครดิต</button>
+            <button class="deduct-credit-button" type="submit" name="action" value="deduct">ลบเครดิต</button>
+          </div>
           <div class="form-status" aria-live="polite"></div>
         </form>
       </article>`;
@@ -7339,10 +7430,15 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       padding: 7px 9px;
       font-size: 15px;
     }
+    .credit-button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 9px;
+    }
     .credit-form button {
       width: 100%;
       min-height: 38px;
-      margin-top: 9px;
       border: 0;
       border-radius: 8px;
       color: #ffffff;
@@ -7350,6 +7446,9 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
       font-size: 15px;
       font-weight: 800;
       cursor: pointer;
+    }
+    .credit-form .deduct-credit-button {
+      background: #dc2626;
     }
     .credit-form button:disabled {
       opacity: 0.65;
@@ -7430,13 +7529,16 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
         event.preventDefault();
 
         const card = form.closest('[data-credit-card]');
-        const button = form.querySelector('button');
+        const submitter = event.submitter;
+        const buttons = Array.from(form.querySelectorAll('button'));
         const status = form.querySelector('.form-status');
         const payload = Object.fromEntries(new FormData(form).entries());
+        payload.action = submitter?.value || payload.action || 'add';
+        const isDeduct = payload.action === 'deduct';
 
-        button.disabled = true;
+        buttons.forEach((button) => { button.disabled = true; });
         status.classList.remove('error');
-        status.textContent = 'กำลังเติมเครดิต...';
+        status.textContent = isDeduct ? 'กำลังลบเครดิต...' : 'กำลังเติมเครดิต...';
 
         try {
           const response = await fetch('/api/credits/manual', {
@@ -7447,7 +7549,7 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
           const result = await response.json().catch(() => ({}));
 
           if (!response.ok || !result.success) {
-            throw new Error(result.error || 'เติมเครดิตไม่สำเร็จ');
+            throw new Error(result.error || (isDeduct ? 'ลบเครดิตไม่สำเร็จ' : 'เติมเครดิตไม่สำเร็จ'));
           }
 
           form.reset();
@@ -7455,12 +7557,12 @@ app.get('/credits', requireCreditsAdminAuth, async (req, res) => {
           if (balanceTarget) {
             balanceTarget.textContent = formatNumber(result.balance);
           }
-          status.textContent = 'เติมสำเร็จ ยอดล่าสุด ' + formatNumber(result.balance);
+          status.textContent = (isDeduct ? 'ลบสำเร็จ ยอดล่าสุด ' : 'เติมสำเร็จ ยอดล่าสุด ') + formatNumber(result.balance);
         } catch (error) {
           status.classList.add('error');
-          status.textContent = error.message || 'เติมเครดิตไม่สำเร็จ';
+          status.textContent = error.message || (isDeduct ? 'ลบเครดิตไม่สำเร็จ' : 'เติมเครดิตไม่สำเร็จ');
         } finally {
-          button.disabled = false;
+          buttons.forEach((button) => { button.disabled = false; });
         }
       });
     });
@@ -7906,6 +8008,8 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
   const userId = getCreditUserIdFromAdminToken(req.body?.userKey);
   const amount = Number(req.body?.amount);
   const note = String(req.body?.note || '').trim();
+  const action = String(req.body?.action || req.body?.type || 'add').trim().toLowerCase();
+  const isDeduct = ['deduct', 'subtract', 'remove', 'minus', 'decrease', 'ลบ', 'หัก', '-'].includes(action);
 
   if (!userId) {
     return res.status(404).json({ success: false, error: 'ไม่พบผู้ใช้นี้' });
@@ -7913,6 +8017,15 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
 
   if (!Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ success: false, error: 'จำนวนเครดิตไม่ถูกต้อง' });
+  }
+
+  const roundedAmount = roundPoints(amount);
+
+  if (isDeduct) {
+    const snapshotBefore = getCreditSnapshot(userId);
+    if (snapshotBefore.credit.balance < roundedAmount) {
+      return res.status(400).json({ success: false, error: 'ยอดเครดิตไม่พอสำหรับลบ' });
+    }
   }
 
   const nowTimestamp = Date.now();
@@ -7924,30 +8037,41 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
     message: { id: `manual-credit-${nowTimestamp}-${crypto.randomBytes(4).toString('hex')}` },
     timestamp: nowTimestamp
   };
-  const rawText = note ? `Manual credit: ${note}` : 'Manual credit by admin';
-  const result = addCreditForUser(manualEvent, roundPoints(amount), rawText, {
-    type: 'manual_credit_added',
+  const operationAmount = isDeduct ? -roundedAmount : roundedAmount;
+  const actionType = isDeduct ? 'manual_credit_deducted' : 'manual_credit_added';
+  const rawText = note
+    ? `${isDeduct ? 'Manual credit deducted' : 'Manual credit'}: ${note}`
+    : (isDeduct ? 'Manual credit deducted by admin' : 'Manual credit by admin');
+  const result = addCreditForUser(manualEvent, operationAmount, rawText, {
+    type: actionType,
     manual: true,
+    manualAction: isDeduct ? 'deduct' : 'add',
     manualAdmin: CREDITS_ADMIN_USERNAME,
-    manualNote: note
+    manualNote: note,
+    totalAddedDelta: isDeduct ? 0 : roundedAmount
   });
   const snapshot = getCreditSnapshot(userId);
-  const pushResponse = await pushToLine(userId, [buildManualCreditAddedFlex(amount, snapshot)]).catch(() => null);
+  const pushResponse = await pushToLine(userId, [
+    isDeduct
+      ? buildManualCreditDeductedFlex(roundedAmount, snapshot)
+      : buildManualCreditAddedFlex(roundedAmount, snapshot)
+  ]).catch(() => null);
   const pushStatus = pushResponse ? (pushResponse.ok ? 'sent' : 'failed') : 'skipped';
 
   writeLogs([
     {
-      eventType: 'manual_credit_added',
+      eventType: actionType,
       sourceType: 'web_admin',
       userId,
       message: rawText,
       timestamp: nowTimestamp,
       time: formatDate(nowTimestamp),
-      creditAction: 'manual_credit_added',
-      creditAmount: roundPoints(amount),
+      creditAction: actionType,
+      creditAmount: operationAmount,
       creditBalance: result.credit.balance,
       manualCreditDisplayName: displayName,
-      manualCreditPushStatus: pushStatus
+      manualCreditPushStatus: pushStatus,
+      manualCreditAction: isDeduct ? 'deduct' : 'add'
     },
     ...readLogs()
   ]);
@@ -7956,7 +8080,7 @@ app.post('/api/credits/manual', requireCreditsAdminAuth, async (req, res) => {
     success: true,
     userId,
     displayName,
-    amount: roundPoints(amount),
+    amount: operationAmount,
     balance: result.credit.balance,
     pushStatus
   });
